@@ -1,18 +1,12 @@
 'use strict';
 
-const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 
 /**
  * Slash command definitions, shared by the runtime handler and the
  * registration script (`npm run deploy`).
  */
 const definitions = [
-  new SlashCommandBuilder()
-    .setName('panel')
-    .setDescription('Post the public lawsuit panel in this channel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false),
-
   new SlashCommandBuilder()
     .setName('add')
     .setDescription('Add a user to this case channel (clerks and up)')
@@ -25,13 +19,8 @@ const definitions = [
     .setDMPermission(false),
 
   new SlashCommandBuilder()
-    .setName('caseinfo')
-    .setDescription('Show the docket entry for this case')
-    .setDMPermission(false),
-
-  new SlashCommandBuilder()
-    .setName('exhibits')
-    .setDescription('List every exhibit filed in this case')
+    .setName('close')
+    .setDescription('Close this case and lock the channel (clerks only)')
     .setDMPermission(false),
 ].map((c) => c.toJSON());
 

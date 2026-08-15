@@ -1,6 +1,5 @@
 'use strict';
 
-const config = require('../config');
 const { IDS, FIELDS, withArg } = require('../lib/ids');
 const { STAGES } = require('../stages');
 const { T } = require('./common');
@@ -30,10 +29,11 @@ const fileUpload = (custom_id, { required = true, max_values = 1, min_values } =
   ...(min_values !== undefined ? { min_values } : {}),
 });
 
-const userSelect = (custom_id, { placeholder, required = true, defaultUserId } = {}) => ({
+const userSelect = (custom_id, { placeholder, required = true, defaultUserId, max_values } = {}) => ({
   type: T.USER_SELECT,
   custom_id,
   ...(placeholder ? { placeholder } : {}),
+  ...(max_values ? { max_values } : {}),
   required,
   // Pre-selects whoever the plaintiff named, so the clerk only has to confirm
   // it. The clerk can still change it — nothing is trusted until they submit.
@@ -70,45 +70,6 @@ const intakeModal = () => ({
         required: false,
         max_length: 900,
       }),
-      'Put any links here.',
-    ),
-    label(
-      'Please provide any evidence.',
-      fileUpload(FIELDS.EVIDENCE, { required: false, max_values: 10 }),
-      'Put any files here that can better describe or give context to your situation.',
-    ),
-  ],
-});
-
-/* ── 2. Intake: suing a department ───────────────────────────── */
-
-const departmentModal = () => ({
-  custom_id: IDS.MODAL_DEPT,
-  title: 'Sue a Department',
-  components: [
-    label(
-      'Which department are you suing?',
-      {
-        type: T.STRING_SELECT,
-        custom_id: FIELDS.DEPARTMENT,
-        placeholder: 'Select a department',
-        options: config.departments.map((d) => ({ label: d.slice(0, 100), value: d.slice(0, 100) })),
-      },
-      'Select the state or local agency that wronged you.',
-    ),
-    label(
-      'Why are you suing them?',
-      textInput(FIELDS.REASON, {
-        style: 2,
-        placeholder:
-          'A trooper impounded my vehicle without cause and it has not been returned.',
-        max_length: 1500,
-      }),
-      'Please provide in maximum detail why you are suing this department.',
-    ),
-    label(
-      'Please provide any evidence.',
-      textInput(FIELDS.LINKS, { placeholder: 'www.videolink.com', required: false, max_length: 900 }),
       'Put any links here.',
     ),
     label(
@@ -214,7 +175,57 @@ const serviceApproveModal = (submissionId, suggestedDefendantId) => ({
   ],
 });
 
-/* ── 7. /addjudge ────────────────────────────────────────────── */
+/* ── 7. Government claim: the two wizard modals ──────────────── */
+
+const govFilesModal = (draftId) => ({
+  custom_id: withArg(IDS.MODAL_GOV_FILES, draftId),
+  title: 'Sue a Department',
+  components: [
+    label(
+      'Please put all forms here.',
+      fileUpload(FIELDS.GOV_FORMS, { max_values: 3 }),
+      'Here is where you would put any of the last 3 forms.',
+    ),
+  ],
+});
+
+const govDetailsModal = (draftId) => ({
+  custom_id: withArg(IDS.MODAL_GOV_DETAILS, draftId),
+  title: 'Sue a Department',
+  components: [
+    label(
+      'What department are you suing?',
+      textInput(FIELDS.GOV_DEPARTMENT, { max_length: 120 }),
+    ),
+    label(
+      'Please list any employees involved.',
+      userSelect(FIELDS.GOV_EMPLOYEES, { required: false, max_values: 10 }),
+    ),
+    label(
+      'Please describe in detail what happened.',
+      textInput(FIELDS.GOV_DESCRIPTION, {
+        style: 2,
+        placeholder: 'I was driving when the police car slammed into my car breaking my arm...',
+        max_length: 1500,
+      }),
+    ),
+    label(
+      'What compensation do you want to receive?',
+      textInput(FIELDS.GOV_COMPENSATION, {
+        style: 2,
+        placeholder: 'I want $7,000 to pay for my medical bills.',
+        max_length: 700,
+      }),
+    ),
+    label(
+      'Do you have an attorney?',
+      userSelect(FIELDS.GOV_ATTORNEY, { required: false }),
+      'If so please select them here.',
+    ),
+  ],
+});
+
+/* ── 8. /addjudge ────────────────────────────────────────────── */
 
 const addJudgeModal = () => ({
   custom_id: IDS.MODAL_ADD_JUDGE,
@@ -228,8 +239,9 @@ const addJudgeModal = () => ({
 });
 
 module.exports = {
+  govFilesModal,
+  govDetailsModal,
   intakeModal,
-  departmentModal,
   caseDenyModal,
   stepModal,
   reviewDenyModal,

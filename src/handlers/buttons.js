@@ -8,9 +8,21 @@ const { IDS, parse } = require('../lib/ids');
 const { STAGES } = require('../stages');
 const M = require('../ui/messages');
 const modals = require('../ui/modals');
+const W = require('../ui/govWizard');
+const { startCountdown, cancelCountdown } = require('../lib/countdown');
 const cases = require('../services/caseService');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
+
+/**
+ * A bare one-line V2 message. No ephemeral flag: every use is an edit of an
+ * already-ephemeral message, and Discord rejects that bit on an edit.
+ */
+const note = (content) => ({
+  flags: MessageFlags.IsComponentsV2,
+  components: [{ type: 10, content }],
+  allowedMentions: { parse: [] },
+});
 
 const nope = (interaction, content) =>
   interaction.reply({ content, flags: EPHEMERAL }).catch(() => {});
@@ -34,8 +46,79 @@ async function handleButton(interaction) {
     case IDS.PANEL_FILE:
       return interaction.showModal(modals.intakeModal());
 
-    case IDS.PANEL_DEPT:
-      return interaction.showModal(modals.departmentModal());
+    case IDS.PANEL_DEPT: {
+      const draftId = store.createDraft(interaction.user.id, interaction.guildId, 'department');
+      const render = (n) => W.govPanel(1, draftId, n);
+      await interaction.reply(W.ephemeral(W.govPanel(1, draftId, W.READ_SECONDS, true)));
+      startCountdown(draftId, interaction, render, W.READ_SECONDS);
+      return undefined;
+    }
+
+    /* ── government-claim wizard ──────────────────────────── */
+
+    case IDS.GOV_NEXT: {
+      const [stepRaw, draftRaw] = String(arg).split('.');
+      const step = Number(stepRaw);
+      const draftId = Number(draftRaw);
+
+      const draft = store.getDraft(draftId);
+      if (!draft) {
+        cancelCountdown(draftId);
+        return interaction.update(W.govCancelled());
+      }
+      if (draft.user_id !== interaction.user.id) {
+        return nope(interaction, 'This is not your form.');
+      }
+
+      // Steps 3 and 4 collect data, so they open a modal instead of advancing.
+      if (step === 3) return interaction.showModal(modals.govFilesModal(draftId));
+      if (step === 4) return interaction.showModal(modals.govDetailsModal(draftId));
+
+      const render = (n) => W.govPanel(step + 1, draftId, n);
+      await interaction.update(W.govPanel(step + 1, draftId, W.READ_SECONDS, true));
+      startCountdown(draftId, interaction, render, W.READ_SECONDS);
+      return undefined;
+    }
+
+    case IDS.GOV_CANCEL: {
+      const draftId = Number(arg);
+      const draft = store.getDraft(draftId);
+      if (draft && draft.user_id !== interaction.user.id) {
+        return nope(interaction, 'This is not your form.');
+      }
+      // Stop the running countdown first, or a second later it would redraw the
+      // live panel on top of the "Cancelled" message.
+      cancelCountdown(draftId);
+      store.deleteDraft(draftId);
+      return interaction.update(W.govCancelled());
+    }
+
+    /* ── /close confirmation chain ────────────────────────── */
+
+    case IDS.CLOSE_NO:
+      return interaction.update(note('Cancelled. The case is untouched.'));
+
+    case IDS.CLOSE_YES: {
+      if (!perms.isClerk(interaction.member)) {
+        return nope(interaction, 'Only clerks may close a case.');
+      }
+      const c = await caseHere(interaction);
+      if (!c) return undefined;
+      if (c.status === 'closed') return nope(interaction, 'This case is already closed.');
+
+      const step = Number(arg);
+      if (step < 3) return interaction.update(M.closeConfirm(c, step + 1));
+
+      await interaction.update(note(`Closing \`${c.case_number}\`...`));
+      const closed = await cases.closeCase(interaction, c);
+      return interaction.editReply(
+        note(
+          closed
+            ? `\`${c.case_number}\` is closed and the channel is locked.`
+            : 'Another clerk just closed this case.',
+        ),
+      );
+    }
 
     case IDS.PANEL_ACTIVE:
       return interaction.reply(M.activeCasesList(store.getActiveCases()));
@@ -89,21 +172,28 @@ async function handleButton(interaction) {
         );
       }
 
-      if (store.hasPendingSubmission(c.id, stage)) {
-        return nope(
-          interaction,
-          'You already have a submission waiting on a clerk for this step. ' +
-            'Wait for it to be approved or denied before sending another.',
-        );
-      }
-
-      const expected = STAGES[stage].actor === 'defendant' ? c.defendant_id : c.plaintiff_id;
-      if (interaction.user.id !== expected && !perms.isAdmin(interaction.member)) {
+      const expectedActor = STAGES[stage].actor === 'defendant' ? c.defendant_id : c.plaintiff_id;
+      if (interaction.user.id !== expectedActor && !perms.isAdmin(interaction.member)) {
         return nope(
           interaction,
           STAGES[stage].actor === 'defendant'
             ? 'Only the defendant can complete this step.'
             : 'Only the plaintiff can complete this step.',
+        );
+      }
+
+      // Some stages are just an acknowledgement — no upload, no clerk review.
+      if (STAGES[stage].noSubmission) {
+        await interaction.deferReply({ flags: EPHEMERAL });
+        const moved = await cases.advanceWithoutSubmission(interaction, c);
+        return interaction.editReply(moved ? 'Moved to the next step.' : 'That step is no longer current.');
+      }
+
+      if (store.hasPendingSubmission(c.id, stage)) {
+        return nope(
+          interaction,
+          'You already have a submission waiting on a clerk for this step. ' +
+            'Wait for it to be approved or denied before sending another.',
         );
       }
 

@@ -9,6 +9,7 @@ const { handleModal } = require('./handlers/modals');
 const { handleCommand } = require('./handlers/commands');
 const { handleMessage, handleMemberJoin } = require('./handlers/messages');
 const { hasPoppler } = require('./lib/pdf');
+const store = require('./db');
 
 const client = new Client({
   intents: [
@@ -24,7 +25,17 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`[ready] logged in as ${c.user.tag}`);
   console.log(`[ready] guild=${config.guildId} category=${config.channels.civilCategory}`);
   await hasPoppler();
-  c.user.setPresence({ activities: [{ name: 'the docket ⚖️' }], status: 'online' });
+
+  const missing = config.missingForms();
+  if (missing.length) {
+    console.error('[ready] MISSING COURT FORMS — any message that attaches these will fail:');
+    for (const m of missing) console.error(`          assets/forms/${m}`);
+  }
+
+  const pruned = store.pruneDrafts();
+  if (pruned) console.log(`[ready] cleared ${pruned} abandoned government-claim draft(s)`);
+
+  c.user.setPresence({ activities: [{ name: 'the docket' }], status: 'online' });
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {

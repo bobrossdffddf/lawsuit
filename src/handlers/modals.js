@@ -8,34 +8,30 @@ const perms = require('../lib/perms');
 const { IDS, FIELDS, parse } = require('../lib/ids');
 const { STAGES } = require('../stages');
 const F = require('./fields');
+const W = require('../ui/govWizard');
+const { startCountdown, cancelCountdown } = require('../lib/countdown');
 const cases = require('../services/caseService');
 
 const EPHEMERAL = MessageFlags.Ephemeral;
-
 async function handleModal(interaction) {
   const { base, arg } = parse(interaction.customId);
 
   switch (base) {
-    /* ── filing a new case ────────────────────────────────── */
+    /* ── filing a new civil case ──────────────────────────── */
 
-    case IDS.MODAL_INTAKE:
-    case IDS.MODAL_DEPT: {
+    case IDS.MODAL_INTAKE: {
       await interaction.deferReply({ flags: EPHEMERAL });
 
-      const isDept = base === IDS.MODAL_DEPT;
       const reason = F.textOf(interaction, FIELDS.REASON);
       if (!reason.trim()) return interaction.editReply('You must explain why you are suing.');
 
-      const department = isDept ? F.stringSelectOf(interaction, FIELDS.DEPARTMENT) : null;
-      const defendantRaw = isDept ? null : F.textOf(interaction, FIELDS.DEFENDANT);
-
-      if (isDept && !department) return interaction.editReply('You must pick a department.');
-      if (!isDept && !defendantRaw.trim()) return interaction.editReply('You must name who you are suing.');
+      const defendantRaw = F.textOf(interaction, FIELDS.DEFENDANT);
+      if (!defendantRaw.trim()) return interaction.editReply('You must name who you are suing.');
 
       const { c, channel } = await cases.createCase(interaction, {
-        kind: isDept ? 'department' : 'person',
+        kind: 'person',
         defendantRaw,
-        department,
+        department: null,
         reason,
         links: F.textOf(interaction, FIELDS.LINKS),
         files: F.filesOf(interaction, FIELDS.EVIDENCE),
@@ -45,6 +41,69 @@ async function handleModal(interaction) {
         `Your case **${c.case_number}** has been filed: <#${channel.id}>\n` +
           'A clerk will review it shortly. You will not be able to type in that channel until it is opened.',
       );
+    }
+
+    /* ── government-claim wizard ──────────────────────────── */
+
+    case IDS.MODAL_GOV_FILES: {
+      const draftId = Number(arg);
+      const draft = store.getDraft(draftId);
+      if (!draft) return interaction.reply({ content: 'That form expired. Start again.', flags: EPHEMERAL });
+      if (draft.user_id !== interaction.user.id) {
+        return interaction.reply({ content: 'This is not your form.', flags: EPHEMERAL });
+      }
+
+      const files = F.filesOf(interaction, FIELDS.GOV_FORMS);
+      if (!files.length) {
+        return interaction.reply({
+          content: 'You must attach your completed Notice of Claim before continuing.',
+          flags: EPHEMERAL,
+        });
+      }
+
+      store.saveDraft(draftId, files, draft.payload);
+
+      const render = (n) => W.govPanel(4, draftId, n);
+      await interaction.update(W.govPanel(4, draftId, W.READ_SECONDS, true));
+      startCountdown(draftId, interaction, render, W.READ_SECONDS);
+      return undefined;
+    }
+
+    case IDS.MODAL_GOV_DETAILS: {
+      const draftId = Number(arg);
+      const draft = store.getDraft(draftId);
+      if (!draft) return interaction.reply({ content: 'That form expired. Start again.', flags: EPHEMERAL });
+      if (draft.user_id !== interaction.user.id) {
+        return interaction.reply({ content: 'This is not your form.', flags: EPHEMERAL });
+      }
+
+      const department = F.textOf(interaction, FIELDS.GOV_DEPARTMENT).trim();
+      const description = F.textOf(interaction, FIELDS.GOV_DESCRIPTION).trim();
+      if (!department) return interaction.reply({ content: 'Name the department.', flags: EPHEMERAL });
+      if (!description) return interaction.reply({ content: 'Describe what happened.', flags: EPHEMERAL });
+
+      const payload = {
+        department,
+        description,
+        compensation: F.textOf(interaction, FIELDS.GOV_COMPENSATION).trim(),
+        employees: F.userIdsOf(interaction, FIELDS.GOV_EMPLOYEES),
+        attorneyId: F.userIdOf(interaction, FIELDS.GOV_ATTORNEY),
+      };
+
+      // Consume the draft BEFORE the slow work (channel creation, downloads,
+      // PDF rendering). A second submit of the same draft then finds nothing
+      // and cannot open a duplicate channel with a second docket number.
+      if (!store.claimDraft(draftId)) {
+        return interaction.reply({ content: 'That claim is already being filed.', flags: EPHEMERAL });
+      }
+      cancelCountdown(draftId);
+
+      // Swap the panel out first, so Continue is gone while we work.
+      await interaction.update(W.govFiling());
+
+      const { c, channel } = await cases.createDepartmentCase(interaction, { ...draft, payload });
+
+      return interaction.editReply(W.govFiled(c.case_number, channel.id));
     }
 
     /* ── clerk denies intake ──────────────────────────────── */
@@ -151,7 +210,6 @@ async function handleModal(interaction) {
         return interaction.editReply('Another clerk just handled this.');
       }
 
-      await cases.sealReview(interaction, c, sub, 'approved');
       store.updateCase(c.id, { defendant_username: sub.payload?.defendantUser ?? null });
 
       const attached = await cases.attachDefendant(interaction, store.getCaseById(c.id), defendantId);

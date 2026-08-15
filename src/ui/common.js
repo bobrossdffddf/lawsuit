@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('node:fs');
 const { MessageFlags, AttachmentBuilder } = require('discord.js');
 const config = require('../config');
 
@@ -50,11 +51,11 @@ const pill = (label, idx) => ({
 
 const fileRef = (name) => ({ type: T.FILE, file: { url: `attachment://${name}` } });
 
-/** Standard court container: banner, body, footer. */
+/** Standard court container: banner, body, footer. No accent bar — Discord's
+ *  default sidebar colour, matching the original panel designs. */
 function container(bodyComponents) {
   return {
     type: T.CONTAINER,
-    accent_color: config.brand.accent,
     components: [banner(), ...bodyComponents.filter(Boolean), sep(2), footer()],
   };
 }
@@ -63,7 +64,6 @@ function container(bodyComponents) {
 function bareContainer(bodyComponents) {
   return {
     type: T.CONTAINER,
-    accent_color: config.brand.accent,
     components: bodyComponents.filter(Boolean),
   };
 }
@@ -80,14 +80,32 @@ const formAttachment = (key) =>
 
 const formName = (key) => config.forms[key].name;
 
+/** True when the PDF actually exists in assets/forms/. */
+const hasForm = (key) => Boolean(config.forms[key]) && fs.existsSync(config.forms[key].file);
+
+/** Only the forms that are really on disk — safe to hand to `files:`. */
+const formAttachments = (keys) => keys.filter(hasForm).map(formAttachment);
+
+/**
+ * A File component for a court form, or a plain note if that PDF has not been
+ * added to assets/forms/ yet. Referencing a missing attachment makes Discord
+ * reject the whole message, so this degrades instead of breaking the flow.
+ */
+const formRef = (key) =>
+  hasForm(key)
+    ? fileRef(formName(key))
+    : text(`-# \`${formName(key)}\` has not been uploaded to the bot yet — ask a clerk for it.`);
+
 /**
  * Standard mention permissions: allow pinging the specific users/roles we
  * name, never @everyone.
  */
+// Duplicate ids make Discord reject the whole message with
+// allowed_mentions[SET_TYPE_ALREADY_CONTAINS_VALUE], so always de-dupe.
 const mentions = (users = [], roles = []) => ({
   parse: [],
-  users: users.filter(Boolean),
-  roles: roles.filter(Boolean),
+  users: [...new Set(users.filter(Boolean))],
+  roles: [...new Set(roles.filter(Boolean))],
 });
 
 module.exports = {
@@ -107,6 +125,9 @@ module.exports = {
   title,
   channelRef,
   formAttachment,
+  formAttachments,
   formName,
+  formRef,
+  hasForm,
   mentions,
 };

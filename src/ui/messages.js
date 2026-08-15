@@ -43,7 +43,7 @@ function lawsuitPanel() {
  * @param {object} c        case row
  * @param {object} media    result of buildMedia() for the intake evidence
  */
-function intakeMessage(c, media = { galleryItems: [], fileComponents: [], overflowLinks: [] }) {
+function intakeMessage(c, media = { galleryItems: [], fileComponents: [], overflow: [] }) {
   const defendantLabel = c.kind === 'department' ? c.department : c.defendant_raw;
   const body = [
     `${U.title(`${c.case_number} <@${c.plaintiff_id}> V. ${fmt.clean(defendantLabel, 80)}`)}\n` +
@@ -54,12 +54,8 @@ function intakeMessage(c, media = { galleryItems: [], fileComponents: [], overfl
       `> Links: ${fmt.hyperlink(c.links)}\n`,
   ];
 
-  if (media.overflowLinks?.length) {
-    body.push(
-      `-# Attachments too large to mirror: ${media.overflowLinks
-        .map((o) => `[${o.name}](${o.url})`)
-        .join(' · ')}`,
-    );
+  if (media.overflow?.length) {
+    body.push(`-# Also on file (too large to show here): ${media.overflow.join(' · ')}`);
   }
 
   const inner = [U.text(body.join('\n'))];
@@ -75,6 +71,7 @@ function intakeMessage(c, media = { galleryItems: [], fileComponents: [], overfl
 
   return {
     flags: V2,
+    files: media.attachments ?? [],
     components: [
       U.text(`<@&${config.roles.clerk}>`),
       U.container(inner),
@@ -86,6 +83,57 @@ function intakeMessage(c, media = { galleryItems: [], fileComponents: [], overfl
             'this channel until your case gets accepted. Please take this time to hire a lawyer or ' +
             'study up if you will be representing yourself pro se. If you have any questions please ' +
             `feel free to visit ${U.channelRef(config.channels.support)}.\n`,
+        ),
+      ]),
+    ],
+    allowedMentions: U.mentions([c.plaintiff_id], [config.roles.clerk]),
+  };
+}
+
+/** Intake card for a claim against a government entity. */
+function departmentIntakeMessage(c, media = { galleryItems: [], fileComponents: [], overflow: [] }) {
+  const employees = JSON.parse(c.employees || '[]');
+  const body = [
+    `${U.title(`${c.case_number} <@${c.plaintiff_id}> V. ${fmt.clean(c.department, 80)}`)}\n` +
+      'ㅤ\n' +
+      `> Department: ${fmt.clean(c.department, 200)}\n` +
+      `> Employees involved: ${employees.length ? employees.map((id) => `<@${id}>`).join(', ') : 'None named'}\n` +
+      `> Attorney: ${c.attorney_id ? `<@${c.attorney_id}>` : 'Pro se (none)'}\n` +
+      'ㅤ\n' +
+      `> What happened: ${fmt.clean(c.reason, 900)}\n` +
+      'ㅤ\n' +
+      `> Compensation sought: ${fmt.clean(c.compensation, 500)}\n`,
+  ];
+
+  if (media.overflow?.length) {
+    body.push(`-# Also on file (too large to show here): ${media.overflow.join(' · ')}`);
+  }
+
+  const inner = [U.text(body.join('\n'))];
+  if (media.galleryItems?.length) inner.push({ type: T.GALLERY, items: media.galleryItems });
+  inner.push(...(media.fileComponents ?? []));
+  inner.push(
+    U.sep(2),
+    U.row(
+      U.button(IDS.CASE_OPEN, 'Open Case', STYLE.SUCCESS),
+      U.button(IDS.CASE_DENY, 'Deny Case', STYLE.DANGER),
+    ),
+  );
+
+  return {
+    flags: V2,
+    files: media.attachments ?? [],
+    components: [
+      U.text(`<@&${config.roles.clerk}>`),
+      U.container(inner),
+      U.bareContainer([
+        U.text(
+          `## Dear <@${c.plaintiff_id}>,\n` +
+            '> Please allow our clerks time to review your notice of claim package. If your claim ' +
+            'gets denied then feel free to re-file with any changes that the clerk requested. You are ' +
+            'not able to type in this channel until your claim gets accepted. Please do not contact ' +
+            'the agency again until a clerk instructs you to. If you have any questions please feel ' +
+            `free to visit ${U.channelRef(config.channels.support)}.\n`,
         ),
       ]),
     ],
@@ -125,19 +173,20 @@ function intakeDenialDM(c, reason, clerkId) {
 }
 
 /** Mirror of the denial posted in-channel, for the record. */
-function intakeDeniedNotice(c, reason, clerkId) {
+function intakeDeniedNotice(c, reason, clerkId, opts = {}) {
+  const lines = [
+    `${U.title('Case Denied')}\n` +
+      `\`${c.case_number}\` was denied by <@${clerkId}>.\n\n` +
+      `> Reason: ${fmt.clean(reason, 900)}`,
+  ];
+  if (opts.dmFailed) {
+    lines.push(`-# <@${c.plaintiff_id}> — your DMs are closed, so the notice is here instead.`);
+  }
+
   return {
     flags: V2,
-    components: [
-      U.container([
-        U.text(
-          `${U.title('Case Denied')}\n` +
-            `\`${c.case_number}\` was denied by <@${clerkId}>.\n\n` +
-            `> Reason: ${fmt.clean(reason, 900)}`,
-        ),
-      ]),
-    ],
-    allowedMentions: U.mentions([clerkId]),
+    components: [U.container([U.text(lines.join('\n'))])],
+    allowedMentions: U.mentions([clerkId, opts.dmFailed ? c.plaintiff_id : null]),
   };
 }
 
@@ -159,9 +208,9 @@ function stageBody(stage, c) {
           '\nTo start please fill out one of these 2 forms:\n\n' +
             'Use this form for disputes from $8,000 or less ',
         ),
-        U.fileRef(U.formName('CV05')),
+        U.formRef('CV05'),
         U.text('Fill out this form for disputes $8,001 - $50,000+'),
-        U.fileRef(U.formName('CV01')),
+        U.formRef('CV01'),
       ];
 
     case 'summons':
@@ -175,7 +224,7 @@ function stageBody(stage, c) {
             "of you serving them. (You may also send it in their DM's or inform them by joining " +
             'the same VC but they must acknowledge in some way.)\nㅤ\n',
         ),
-        U.fileRef(U.formName('CV02')),
+        U.formRef('CV02'),
       ];
 
     case 'service':
@@ -184,7 +233,7 @@ function stageBody(stage, c) {
           '\nTo continue you must serve the defendant in your case. Please get a video and/or ' +
             'photo of you giving or sending the defendant the summons.\n',
         ),
-        U.fileRef(U.formName('CV02')),
+        U.formRef('CV02'),
       ];
 
     case 'answer':
@@ -197,12 +246,12 @@ function stageBody(stage, c) {
             'they can be added to the ticket.\nㅤ\n' +
             'Below is the civil complaint. You should have received a summons when you were served. ',
         ),
-        U.fileRef(U.formName('CV02')),
+        U.formRef('CV02'),
         U.text(
           'ㅤ\nNow you must fill out the ANSWER AND AFFIRMATIVE DEFENSES form. This form is your ' +
             'written response to a complaint. ',
         ),
-        U.fileRef(U.formName('CV03')),
+        U.formRef('CV03'),
       ];
 
     default:
@@ -216,6 +265,7 @@ const STAGE_FORMS = {
   summons: ['CV02'],
   service: ['CV02'],
   answer: ['CV02', 'CV03'],
+  notice: [],
 };
 
 /** Header line shown above the body when the stage is entered normally. */
@@ -230,6 +280,10 @@ const STAGE_HEADERS = {
     `${U.title('Step Two Completed!')}\n` +
     `Step 2 has been completed and you have been approved to move to the next stage. ${AI_NOTE}`,
   answer: () => `${U.title('Lawsuit Pending...')}`,
+  notice: (c) =>
+    `${U.title('Suing a Department')}\n` +
+    `Congrats <@${c.plaintiff_id}> your claim has been approved and your case has been opened. ` +
+    'You now need to send your Notice of Claim (Form CV-04) to the agency you are suing. ',
 };
 
 /**
@@ -246,7 +300,8 @@ function stagePrompt(stage, c, opts = {}) {
     ? `${U.title(meta.denyTitle)}\n` +
       'Your submission has been denied. Please review the feedback then resubmit the form. ' +
       'Remember, its okay to **ASK** AI.\n\n' +
-      `> Reason for denial: ${fmt.clean(opts.denialReason, 800)}\n`
+      `> Reason for denial: ${fmt.clean(opts.denialReason, 800)}\n` +
+      (opts.deniedBy ? `-# Reviewed by <@${opts.deniedBy}>\n` : '')
     : STAGE_HEADERS[stage](c);
 
   const inner = [U.text(header), ...stageBody(stage, c)];
@@ -255,23 +310,24 @@ function stagePrompt(stage, c, opts = {}) {
     U.sep(2),
     U.row(
       U.button(withArg(IDS.STEP_NEXT, stage), 'Next Step', STYLE.SECONDARY),
-      U.pill(meta.pill, stage),
+      meta.pill ? U.pill(meta.pill, stage) : null,
     ),
   );
 
-  if (stage === 'answer') {
+  if (stage === 'notice') {
+    inner.push(U.text('-# Please wait until the department responds to your notice of claim.'));
+  } else if (stage === 'answer') {
     inner.push(U.text('-# Only the defendant is able to do this part.'));
   } else {
     inner.push(U.text('-# Only the plaintiff is able to do this part.'));
   }
 
-  const mentionUsers = [c.plaintiff_id];
-  if (c.defendant_id) mentionUsers.push(c.defendant_id);
+  const mentionUsers = [c.plaintiff_id, c.defendant_id, opts.deniedBy];
 
   return {
     flags: V2,
     components: [U.container(inner)],
-    files: STAGE_FORMS[stage].map(U.formAttachment),
+    files: U.formAttachments(STAGE_FORMS[stage]),
     allowedMentions: U.mentions(mentionUsers),
   };
 }
@@ -294,14 +350,8 @@ function reviewMessage(stage, c, submissionId, media, submitterId, extraLines = 
   if (media.galleryItems?.length) inner.push({ type: T.GALLERY, items: media.galleryItems });
   inner.push(...(media.fileComponents ?? []));
 
-  if (media.overflowLinks?.length) {
-    inner.push(
-      U.text(
-        `-# Files too large to mirror here: ${media.overflowLinks
-          .map((o) => `[${o.name}](${o.url})`)
-          .join(' · ')}`,
-      ),
-    );
+  if (media.overflow?.length) {
+    inner.push(U.text(`-# Also on file (too large to show here): ${media.overflow.join(' · ')}`));
   }
 
   inner.push(
@@ -321,33 +371,26 @@ function reviewMessage(stage, c, submissionId, media, submitterId, extraLines = 
   };
 }
 
-/** Rewrites a review message after it has been resolved, so the buttons go away. */
-function reviewResolved(stage, c, media, submitterId, status, actorId, reason) {
-  const meta = STAGES[stage];
-  const verdict =
-    status === 'approved'
-      ? `**Approved** by <@${actorId}> · ${fmt.timestamp()}`
-      : `**Denied** by <@${actorId}> · ${fmt.timestamp()}\n> ${fmt.clean(reason, 700)}`;
-
-  const inner = [
-    U.text(`${U.title(meta.reviewTitle)}\n${verdict}`),
-    U.text(`-# Submitted by <@${submitterId}>`),
-  ];
-  if (media.galleryItems?.length) inner.push({ type: T.GALLERY, items: media.galleryItems });
-  inner.push(...(media.fileComponents ?? []));
-
-  return {
-    flags: V2,
-    components: [U.container(inner)],
-    allowedMentions: U.mentions([submitterId, actorId]),
-  };
-}
-
 /* ══════════════════════════════════════════════════════════════
    6. Docketed / discovery / exhibits
    ══════════════════════════════════════════════════════════════ */
 
 function lawsuitFiled(c) {
+  if (c.kind === 'department') {
+    return {
+      flags: V2,
+      components: [
+        U.container([
+          U.text(
+            `${U.title('Suing a Department')}\n` +
+              'Now that the agency has responded the clerk will now assign a judge and shedule a ' +
+              'time. Please make sure your attorney is in the ticket. ',
+          ),
+        ]),
+      ],
+    };
+  }
+
   return {
     flags: V2,
     components: [
@@ -425,6 +468,7 @@ const STAGE_LABEL = {
   summons: 'Summons',
   service: 'Service of process',
   answer: 'Awaiting answer',
+  notice: 'Notice of claim served',
   filed: 'Filed — discovery open',
 };
 
@@ -461,28 +505,88 @@ function welcomeMessage(member) {
   return {
     flags: V2,
     components: [
-      U.container([
-        U.text(
-          `${U.title('Welcome to the State of Florida')}\n` +
-            `Welcome <@${member.id}>! You are member **#${member.guild.memberCount}**.\n\n` +
-            '> Please read the rules, grab your roles, and review the court procedures before ' +
-            'filing anything with the clerk of court.\n' +
-            `> Questions about a case? Head to ${U.channelRef(config.channels.support)}.`,
-        ),
+      U.bareContainer([
+        {
+          type: T.SECTION,
+          components: [
+            {
+              type: T.TEXT,
+              content: `${config.brand.welcomeEmoji}  Welcome <@${member.id}>! You are member `,
+            },
+          ],
+          accessory: {
+            type: 2,
+            style: STYLE.SECONDARY,
+            label: String(member.guild.memberCount ?? 1),
+            disabled: true,
+            custom_id: `welcome:${member.id}`,
+          },
+        },
       ]),
     ],
     allowedMentions: U.mentions([member.id]),
   };
 }
 
+/* ══════════════════════════════════════════════════════════════
+   8. /close — triple confirmation, then the closing notice
+   ══════════════════════════════════════════════════════════════ */
+
+const CLOSE_PROMPTS = [
+  'This will close the case, lock the channel and archive the discovery thread.',
+  'Second check: the parties will no longer be able to post here.',
+  'Last chance. This cannot be undone from Discord.',
+];
+
+function closeConfirm(c, step) {
+  return {
+    flags: V2,
+    components: [
+      U.container([
+        U.text(
+          `${U.title(`Close ${c.case_number}? (${step}/3)`)}\n` +
+            `${CLOSE_PROMPTS[step - 1]}\n\n` +
+            `> Plaintiff: <@${c.plaintiff_id}>\n` +
+            `> Stage: ${STAGE_LABEL[c.stage] ?? c.stage}`,
+        ),
+        U.sep(2),
+        U.row(
+          U.button(withArg(IDS.CLOSE_YES, step), step === 3 ? 'Close the case' : 'Yes, continue', STYLE.DANGER),
+          U.button(IDS.CLOSE_NO, 'Cancel', STYLE.SECONDARY),
+        ),
+      ]),
+    ],
+    allowedMentions: { parse: [] },
+  };
+}
+
+function caseClosed(c, clerkId) {
+  return {
+    flags: V2,
+    components: [
+      U.container([
+        U.text(
+          `${U.title(`${c.case_number} - Case Closed`)}\n` +
+            `This case was closed by <@${clerkId}> on ${fmt.timestamp()}.\n\n` +
+            '> The channel is now locked. Every document filed on this case has been retained by the ' +
+            'clerk of court.',
+        ),
+      ]),
+    ],
+    allowedMentions: U.mentions([clerkId]),
+  };
+}
+
 module.exports = {
   lawsuitPanel,
   intakeMessage,
+  departmentIntakeMessage,
+  closeConfirm,
+  caseClosed,
   intakeDenialDM,
   intakeDeniedNotice,
   stagePrompt,
   reviewMessage,
-  reviewResolved,
   lawsuitFiled,
   discoveryHeader,
   exhibitFiled,

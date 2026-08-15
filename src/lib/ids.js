@@ -26,6 +26,14 @@ const IDS = {
   REVIEW_OK: 'r:ok',
   REVIEW_NO: 'r:no',
 
+  // Government-suit wizard (ephemeral, before a case exists)
+  GOV_NEXT: 'g:next',
+  GOV_CANCEL: 'g:cancel',
+
+  // /close confirmation chain
+  CLOSE_YES: 'x:yes',
+  CLOSE_NO: 'x:no',
+
   // Modals
   MODAL_INTAKE: 'm:intake',
   MODAL_DEPT: 'm:dept',
@@ -34,6 +42,8 @@ const IDS = {
   MODAL_REVIEW_DENY: 'm:rdeny',
   MODAL_SERVICE_OK: 'm:svcok',
   MODAL_ADD_JUDGE: 'm:addjudge',
+  MODAL_GOV_FILES: 'm:gfiles',
+  MODAL_GOV_DETAILS: 'm:gdetails',
 };
 
 /** `r:ok` + 42 -> `r:ok:42` */
@@ -59,6 +69,12 @@ const FIELDS = {
   DEFENDANT_ID: 'defendant_id',
   DEFENDANT_SELECT: 'defendant_select',
   JUDGE_SELECT: 'judge_select',
+  GOV_FORMS: 'gov_forms',
+  GOV_DEPARTMENT: 'gov_department',
+  GOV_EMPLOYEES: 'gov_employees',
+  GOV_DESCRIPTION: 'gov_description',
+  GOV_COMPENSATION: 'gov_compensation',
+  GOV_ATTORNEY: 'gov_attorney',
 };
 
 module.exports = { IDS, FIELDS, withArg, parse };

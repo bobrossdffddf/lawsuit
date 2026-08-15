@@ -28,6 +28,7 @@ config.dbPath = tmpDb;
 
 const store = require('../src/db');
 const cases = require('../src/services/caseService');
+const { startCountdown, cancelCountdown } = require('../src/lib/countdown');
 
 let failures = 0;
 const assert = (cond, label) => {
@@ -55,6 +56,10 @@ function makeThread(name) {
     name,
     members: { add: async (id) => added.add(id) },
     added,
+    locked: false,
+    archived: false,
+    setLocked: async function (v) { this.locked = v; },
+    setArchived: async function (v) { this.archived = v; },
     send: async (payload) => {
       sentMessages.push({ channel: 'discovery', payload });
       return { id: `msg-${++messageSeq}`, pin: async () => {} };
@@ -66,6 +71,7 @@ function makeChannel(name) {
   const overwrites = new Map();
   const threads = new Map();
   const messages = new Map();
+  const deleted = [];
 
   const channel = {
     id: `chan-${++messageSeq}`,
@@ -83,7 +89,14 @@ function makeChannel(name) {
         if (!m) throw new Error('unknown message');
         return m;
       },
+      delete: async (id) => {
+        if (!messages.has(id)) throw new Error('unknown message');
+        messages.delete(id);
+        deleted.push(id);
+      },
     },
+    live: messages,
+    deleted,
     threads: {
       create: async ({ name: n }) => {
         const t = makeThread(n);
@@ -206,6 +219,8 @@ function startFileHost() {
   assert(sub.status === 'pending' && sub.message_id, 'complaint submission recorded');
   assert(sub.files.length === 1 && sub.files[0].filename, `upload persisted as ${sub.files[0]?.filename}`);
 
+  assert(channel.live.size === 1, `case channel holds exactly 1 bot message (${channel.live.size})`);
+
   const reviewCard = sentMessages.at(-1).payload;
   assert(
     (reviewCard.files ?? []).length > 0 && (reviewCard.files ?? []).length <= 10,
@@ -303,22 +318,127 @@ function startFileHost() {
   c = await cases.appointJudge(clerk, c, JUDGE);
   assert(c.judge_id === JUDGE, 'judge recorded on the docket');
 
+  console.log('\nOne message at a time / files archived');
+  assert(
+    channel.live.size === 1,
+    `after the full lifecycle the channel still holds 1 bot message (${channel.live.size})`,
+  );
+  assert(channel.deleted.length >= 6, `${channel.deleted.length} superseded messages were removed`);
+
+  const archived = store.getCaseFiles(c.id).filter((f) => f.local_path);
+  assert(archived.length >= 3, `${archived.length} filed documents archived to disk`);
+  assert(
+    archived.every((f) => fs.existsSync(f.local_path)),
+    'every archived document actually exists on disk',
+  );
+  const sample = archived[0];
+  assert(
+    sample.local_path.includes(c.case_number),
+    `archived under the case number: ${path.relative(config.caseFilesDir, sample.local_path)}`,
+  );
+
+  console.log('\nGovernment claim pipeline');
+  const govFiler = makeInteraction(PLAINTIFF, null);
+  const draftId = store.createDraft(PLAINTIFF, config.guildId, 'department');
+  const govPayload = {
+    department: 'Florida Highway Patrol',
+    description: 'A trooper rear-ended me during a pursuit and broke my arm.',
+    compensation: 'I want $7,000 to pay for my medical bills.',
+    employees: ['777777777777777777'],
+    attorneyId: '888888888888888888',
+  };
+  store.saveDraft(draftId, upload('/complaint.pdf', 'CV-01_Civil_Complaint.pdf'), govPayload);
+
+  const { c: govCase, channel: govChannel } = await cases.createDepartmentCase(
+    govFiler,
+    store.getDraft(draftId),
+  );
+  store.deleteDraft(draftId);
+
+  assert(govCase.kind === 'department', `filed as a department claim (${govCase.case_number})`);
+  assert(govCase.department === govPayload.department, 'agency recorded');
+  assert(govCase.compensation === govPayload.compensation, 'compensation recorded');
+  assert(JSON.parse(govCase.employees).length === 1, 'named employees recorded');
+  assert(govCase.attorney_id === govPayload.attorneyId, 'attorney recorded');
+  assert(
+    govChannel.overwrites.get(govPayload.attorneyId) === undefined,
+    'attorney access is set at channel creation, not by a later edit',
+  );
+  assert(store.getCaseFiles(govCase.id).some((f) => f.local_path), 'notice-of-claim package archived');
+
+  const govClerk = makeInteraction(CLERK, govChannel);
+  let gc = await cases.openCase(govClerk, govCase);
+  assert(gc.stage === 'notice', 'department claim opens straight to the notice stage');
+
+  gc = await cases.advanceWithoutSubmission(makeInteraction(PLAINTIFF, govChannel), gc);
+  assert(gc.stage === 'filed' && gc.status === 'filed', 'notice stage advances with no upload');
+  assert(Boolean(gc.discovery_thread_id), 'department claim opens a discovery thread too');
+  assert(govChannel.live.size === 1, `department channel holds 1 bot message (${govChannel.live.size})`);
+
+  console.log('\nClosing a case');
+  const closed = await cases.closeCase(govClerk, gc);
+  assert(closed?.status === 'closed', 'case marked closed');
+  assert(govChannel.overwrites.get(PLAINTIFF)?.SendMessages === false, 'plaintiff can no longer post');
+  assert(
+    (await cases.closeCase(govClerk, store.getCaseById(gc.id))) === null,
+    'closing twice is a no-op',
+  );
+
+  console.log('\nWizard countdown');
+
+  // A cancelled countdown must stop editing, or it redraws a live form over
+  // the "Cancelled" panel a second later.
+  const cancelled = [];
+  startCountdown(
+    'sim-cancel',
+    { editReply: async (p) => cancelled.push(p) },
+    (n) => ({ n }),
+    3,
+  );
+  cancelCountdown('sim-cancel');
+  await new Promise((r) => setTimeout(r, 3500));
+  assert(cancelled.length === 0, `cancelled countdown made ${cancelled.length} edits`);
+
+  // A dropped tick must not leave the button greyed out forever.
+  const flaky = [];
+  let calls = 0;
+  startCountdown(
+    'sim-flaky',
+    {
+      editReply: async (p) => {
+        calls += 1;
+        if (calls <= 2) throw new Error('429');
+        flaky.push(p);
+      },
+    },
+    (n) => ({ n }),
+    3,
+  );
+  await new Promise((r) => setTimeout(r, 4500));
+  assert(
+    flaky.some((p) => p.n === 0),
+    'countdown still reaches the enabled render after failed ticks',
+  );
+
   console.log('\nActive docket');
   const active = store.getActiveCases();
-  assert(active.length === 1, `${active.length} active case (the denied/unopened one is excluded)`);
+  assert(active.length === 1, `${active.length} active case (denied, unopened and closed are excluded)`);
 
   server.close();
+  fs.rmSync(path.join(config.caseFilesDir, created.case_number), { recursive: true, force: true });
+  fs.rmSync(path.join(config.caseFilesDir, second.c.case_number), { recursive: true, force: true });
+  fs.rmSync(path.join(config.caseFilesDir, govCase.case_number), { recursive: true, force: true });
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
   fs.rmSync(`${tmpDb}-shm`, { force: true });
 
   console.log(
     failures === 0
-      ? `\n✅ lifecycle simulation passed (${sentMessages.length} messages sent)\n`
-      : `\n❌ ${failures} failure(s)\n`,
+      ? `\nlifecycle simulation passed (${sentMessages.length} messages sent)\n`
+      : `\n${failures} failure(s)\n`,
   );
   process.exit(failures === 0 ? 0 : 1);
 })().catch((err) => {
-  console.error('\n💥 simulation crashed:', err);
+  console.error('\nsimulation crashed:', err);
   process.exit(1);
 });

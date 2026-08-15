@@ -32,6 +32,16 @@ function userIdOf(interaction, customId) {
   }
 }
 
+/** Every user picked in a multi-value user select. */
+function userIdsOf(interaction, customId) {
+  try {
+    const users = interaction.fields.getSelectedUsers(customId, false);
+    return users ? [...users.values()].map((u) => u.id) : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * @returns {Array<{url: string, filename: string, content_type?: string, size?: number}>}
  */
@@ -52,4 +62,4 @@ function filesOf(interaction, customId) {
   }));
 }
 
-module.exports = { textOf, stringSelectOf, userIdOf, filesOf };
+module.exports = { textOf, stringSelectOf, userIdOf, userIdsOf, filesOf };

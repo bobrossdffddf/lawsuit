@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS exhibits (
   created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS drafts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    TEXT    NOT NULL,
+  guild_id   TEXT    NOT NULL,
+  kind       TEXT    NOT NULL,
+  files      TEXT    NOT NULL DEFAULT '[]',
+  payload    TEXT    NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS counters (
   key   TEXT PRIMARY KEY,
   value INTEGER NOT NULL
@@ -80,6 +90,25 @@ CREATE INDEX IF NOT EXISTS idx_cases_status  ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_thread  ON cases(discovery_thread_id);
 CREATE INDEX IF NOT EXISTS idx_sub_case      ON submissions(case_id, stage, status);
 `);
+
+/* ── migrations ───────────────────────────────────────────────
+   Additive only, safe to run against an existing live database. */
+
+function ensureColumn(table, column, ddl) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
+// The single live message the bot keeps in each case channel.
+ensureColumn('cases', 'case_message_id', 'case_message_id TEXT');
+// Where the uploaded file was archived on disk.
+ensureColumn('submission_files', 'local_path', 'local_path TEXT');
+// Government-claim fields.
+ensureColumn('cases', 'compensation', 'compensation TEXT');
+ensureColumn('cases', 'employees', 'employees TEXT');
+ensureColumn('cases', 'attorney_id', 'attorney_id TEXT');
+ensureColumn('cases', 'closed_by', 'closed_by TEXT');
+ensureColumn('cases', 'closed_at', 'closed_at INTEGER');
 
 const now = () => Date.now();
 
@@ -128,8 +157,16 @@ const stmts = {
     UPDATE cases SET stage = ?, updated_at = ? WHERE id = ? AND stage = ?
   `),
   insertFile: db.prepare(`
-    INSERT INTO submission_files (submission_id, url, filename, content_type, size)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO submission_files (submission_id, url, filename, content_type, size, local_path)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `),
+  setCaseMessage: db.prepare('UPDATE cases SET case_message_id = ?, updated_at = ? WHERE id = ?'),
+  filesForCase: db.prepare(`
+    SELECT f.*, s.stage, s.status, s.submitter_id, s.created_at
+    FROM submission_files f
+    JOIN submissions s ON s.id = f.submission_id
+    WHERE s.case_id = ?
+    ORDER BY f.id ASC
   `),
   filesFor: db.prepare('SELECT * FROM submission_files WHERE submission_id = ?'),
 
@@ -138,12 +175,26 @@ const stmts = {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `),
   exhibitsFor: db.prepare('SELECT * FROM exhibits WHERE case_id = ? ORDER BY id ASC'),
+
+  insertDraft: db.prepare(`
+    INSERT INTO drafts (user_id, guild_id, kind, created_at) VALUES (?, ?, ?, ?)
+  `),
+  draftById: db.prepare('SELECT * FROM drafts WHERE id = ?'),
+  updateDraft: db.prepare('UPDATE drafts SET files = ?, payload = ? WHERE id = ?'),
+  deleteDraft: db.prepare('DELETE FROM drafts WHERE id = ?'),
+  pruneDrafts: db.prepare('DELETE FROM drafts WHERE created_at < ?'),
+
+  closeCase: db.prepare(`
+    UPDATE cases SET status = 'closed', closed_by = ?, closed_at = ?, updated_at = ?
+    WHERE id = ? AND status != 'closed'
+  `),
 };
 
 /** Allowed columns for updateCase — guards against SQL injection via key names. */
 const CASE_COLUMNS = new Set([
   'defendant_id', 'defendant_username', 'defendant_raw', 'status', 'stage',
   'judge_id', 'discovery_thread_id', 'reason', 'links', 'department',
+  'case_message_id', 'compensation', 'employees', 'attorney_id',
 ]);
 
 function updateCase(id, patch) {
@@ -168,6 +219,12 @@ module.exports = {
   getCaseByThread: (id) => stmts.caseByThread.get(id),
   getActiveCases: () => stmts.activeCases.all(),
 
+  /** Remembers which message is the case channel's single live embed. */
+  setCaseMessage: (caseId, messageId) => stmts.setCaseMessage.run(messageId, now(), caseId),
+
+  /** Every file ever filed on a case, across all submissions. */
+  getCaseFiles: (caseId) => stmts.filesForCase.all(caseId),
+
   /** Atomically increments the exhibit counter and returns the new value. */
   nextExhibitNumber: db.transaction((caseId) => {
     stmts.bumpExhibit.run(now(), caseId);
@@ -180,10 +237,11 @@ module.exports = {
     for (const f of files) {
       stmts.insertFile.run(
         subId,
-        f.url,
+        f.url ?? '',
         f.filename ?? f.name ?? 'upload',
         f.content_type ?? f.contentType ?? null,
         f.size ?? null,
+        f.localPath ?? f.local_path ?? null,
       );
     }
     return subId;
@@ -218,6 +276,32 @@ module.exports = {
    * @returns {boolean} true if this caller performed the transition.
    */
   advanceStage: (caseId, from, to) => stmts.advanceStage.run(to, now(), caseId, from).changes === 1,
+
+  /* ── government-suit drafts (the ephemeral wizard) ────── */
+
+  createDraft(userId, guildId, kind) {
+    return stmts.insertDraft.run(userId, guildId, kind, now()).lastInsertRowid;
+  },
+  getDraft(id) {
+    const d = stmts.draftById.get(id);
+    if (!d) return null;
+    d.files = JSON.parse(d.files || '[]');
+    d.payload = JSON.parse(d.payload || '{}');
+    return d;
+  },
+  saveDraft: (id, files, payload) =>
+    stmts.updateDraft.run(JSON.stringify(files ?? []), JSON.stringify(payload ?? {}), id),
+  deleteDraft: (id) => stmts.deleteDraft.run(id),
+  /**
+   * Deletes a draft and reports whether this caller was the one that got it.
+   * @returns {boolean} false means someone (or a double-submit) already took it.
+   */
+  claimDraft: (id) => stmts.deleteDraft.run(id).changes === 1,
+  /** Drops abandoned wizards. Called on boot. */
+  pruneDrafts: (olderThanMs = 24 * 60 * 60 * 1000) => stmts.pruneDrafts.run(now() - olderThanMs).changes,
+
+  /** @returns {boolean} true if this caller closed it (false = already closed). */
+  closeCase: (caseId, byId) => stmts.closeCase.run(byId, now(), now(), caseId).changes === 1,
 
   addExhibit: (caseId, letter, filename, url, uploaderId, messageId) =>
     stmts.insertExhibit.run(caseId, letter, filename, url, uploaderId, messageId, now()),
