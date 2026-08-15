@@ -1,0 +1,23 @@
+{
+  "name": "flgov-judicial-bot",
+  "version": "1.0.0",
+  "description": "Judicial branch bot for the Clearwater / Florida State Government roleplay server",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "check": "node scripts/check.js",
+    "simulate": "node scripts/simulate.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.2.3"
+  },
+  "license": "MIT",
+  "private": true
+}

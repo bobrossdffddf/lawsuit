@@ -1,0 +1,34 @@
+[Unit]
+Description=FLGOV Judicial Branch Discord Bot
+Documentation=file:/opt/flgov-bot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=flgov
+Group=flgov
+WorkingDirectory=/opt/flgov-bot
+ExecStart=/usr/bin/node /opt/flgov-bot/src/index.js
+Environment=NODE_ENV=production
+
+# Restart on crash, but back off so a bad token doesn't hammer Discord.
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Logs go to the journal: journalctl -u flgov-bot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=flgov-bot
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/flgov-bot/data
+
+[Install]
+WantedBy=multi-user.target
