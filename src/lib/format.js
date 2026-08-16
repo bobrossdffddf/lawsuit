@@ -9,14 +9,19 @@ function caseYear() {
   return String(new Date().getFullYear()).slice(-2);
 }
 
+/** Civil suits and government claims share the CC docket; criminal has its own. */
+const DOCKET_CODE = { person: 'CC', department: 'CC', criminal: 'CR' };
+
 /**
  * Allocates the next case number for the current year.
+ * @param {string} kind 'person' | 'department' | 'criminal'
  * @returns {{ caseNumber: string, year: string, seq: number }}
  */
-function allocateCaseNumber() {
+function allocateCaseNumber(kind = 'person') {
   const year = caseYear();
-  const seq = store.nextSeq(`case:${year}`);
-  return { caseNumber: `${year}-CC-${String(seq).padStart(6, '0')}`, year, seq };
+  const code = DOCKET_CODE[kind] ?? 'CC';
+  const seq = store.nextSeq(`case:${code}:${year}`);
+  return { caseNumber: `${year}-${code}-${String(seq).padStart(6, '0')}`, year, seq };
 }
 
 /** A -> B -> ... -> Z -> AA -> AB. `n` is 1-based. */
@@ -78,4 +83,4 @@ function clean(text, max = 1200) {
 /** `<t:1700000000:F>` — renders in each viewer's own timezone. */
 const timestamp = (ms = Date.now(), style = 'F') => `<t:${Math.floor(ms / 1000)}:${style}>`;
 
-module.exports = { caseYear, allocateCaseNumber, exhibitLetter, hyperlink, truncate, clean, timestamp };
+module.exports = { caseYear, allocateCaseNumber, DOCKET_CODE, exhibitLetter, hyperlink, truncate, clean, timestamp };

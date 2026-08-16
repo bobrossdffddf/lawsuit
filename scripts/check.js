@@ -21,6 +21,7 @@ const config = require('../src/config');
 const M = require('../src/ui/messages');
 const modals = require('../src/ui/modals');
 const W = require('../src/ui/govWizard');
+const L = require('../src/ui/lawyers');
 const { PIPELINES, STAGES } = require('../src/stages');
 const fmt = require('../src/lib/format');
 
@@ -175,6 +176,9 @@ function checkModal(where, modal) {
     if (inner.type === 19 && (inner.max_values < 1 || inner.max_values > 10)) {
       fail(where, 'file upload max_values must be 1-10');
     }
+    if (inner.type === 21 && (!inner.options?.length || inner.options.length > 10)) {
+      fail(where, 'radio group needs 1-10 options');
+    }
   }
   ok(where);
   return modal;
@@ -241,6 +245,61 @@ const govCase = {
 };
 
 checkMessage('departmentIntakeMessage', M.departmentIntakeMessage(govCase, fakeMedia));
+
+const crimCase = {
+  ...fakeCase,
+  kind: 'criminal',
+  case_number: '26-CR-000004',
+  stage: 'contest',
+  employees: JSON.stringify({ charge: 'Grand theft auto', agency: 'FHP', citation: 'CW-4417Q' }),
+};
+checkMessage('criminalIntakeMessage', M.criminalIntakeMessage(crimCase, fakeMedia));
+checkMessage('lawsuitFiled:criminal', M.lawsuitFiled(crimCase));
+
+console.log('\nLawyers');
+const roll = [
+  { id: '111111111111111111', label: 'Alice Barrow', description: '4.5/5 from 2 · 6 cases' },
+  { id: '222222222222222222', label: 'Max Goodman', description: 'No reviews yet · 1 case' },
+  { id: '333333333333333333', label: 'Nora Vance', description: '5.0/5 from 9 · 12 cases' },
+];
+checkMessage('reviewPanel', L.reviewPanel(roll));
+checkMessage('reviewPanel:empty', L.reviewPanel([]));
+// 30 attorneys must page into two selects per half, not overflow one.
+checkMessage(
+  'reviewPanel:bigRoll',
+  L.reviewPanel(
+    Array.from({ length: 30 }, (_, i) => ({ id: `${i}`.padStart(18, '9'), label: `Attorney ${i}` })),
+  ),
+);
+
+const reviews = Array.from({ length: 12 }, (_, i) => ({
+  rating: (i % 5) + 1,
+  body: `Review number ${i + 1}. They did fine.`,
+  client_id: '444444444444444444',
+  client_name: 'justawacko',
+  created_at: Date.now() - i * 86400000,
+}));
+const lawyerFixture = { id: '222222222222222222', name: 'Max Goodman', barredSince: Date.now(), casesHandled: 7 };
+checkMessage('lawyerProfile:p1', L.lawyerProfile(lawyerFixture, reviews, 0, true));
+checkMessage('lawyerProfile:p3', L.lawyerProfile(lawyerFixture, reviews, 2, false));
+checkMessage('lawyerProfile:none', L.lawyerProfile(lawyerFixture, [], 0, false));
+checkMessage('lawyerRequestNotice', L.lawyerRequestNotice('111111111111111111'));
+checkMessage('lawyerRequestNotice:taken', L.lawyerRequestNotice('111111111111111111', '222222222222222222'));
+checkMessage('lawyerRequestBroadcast', L.lawyerRequestBroadcast(fakeCase, 7, '111111111111111111', 'Assault case.'));
+checkMessage(
+  'lawyerRequestBroadcast:taken',
+  L.lawyerRequestBroadcast(fakeCase, 7, '111111111111111111', 'Assault case.', '222222222222222222'),
+);
+checkMessage('presenceRequestDM', L.presenceRequestDM('111111111111111111', '999999999999999999'));
+
+// Reviews must page five at a time.
+const pageOne = JSON.stringify(L.lawyerProfile(lawyerFixture, reviews, 0, true));
+if ((pageOne.match(/Review number/g) || []).length === 5) ok('review page holds exactly 5');
+else fail('lawyerProfile', 'a page should hold 5 reviews');
+if (pageOne.includes('Page 1/3')) ok('12 reviews paginate to 3 pages');
+else fail('lawyerProfile', 'expected Page 1/3');
+
+console.log('\nMessages (continued)');
 checkMessage('lawsuitFiled:department', M.lawsuitFiled(govCase));
 checkMessage('caseClosed', M.caseClosed(fakeCase, '999'));
 for (const step of [1, 2, 3]) checkMessage(`closeConfirm:${step}`, M.closeConfirm(fakeCase, step));
@@ -304,6 +363,8 @@ checkMessage('activeCasesList:empty', M.activeCasesList([]));
 
 console.log('\nModals');
 checkModal('intakeModal', modals.intakeModal());
+checkModal('criminalModal', modals.criminalModal());
+checkModal('reviewModal', modals.reviewModal('222222222222222222'));
 checkModal('govFilesModal', modals.govFilesModal(42));
 checkModal('govDetailsModal', modals.govDetailsModal(42));
 checkModal('caseDenyModal', modals.caseDenyModal());
@@ -344,11 +405,43 @@ checkMentions(
 checkMentions('intakeMessage', M.intakeMessage(fakeCase, fakeMedia));
 checkMentions('departmentIntakeMessage', M.departmentIntakeMessage(govCase, fakeMedia));
 checkMentions('welcomeMessage', M.welcomeMessage({ id: '111', guild: { memberCount: 45 } }));
+checkMentions('criminalIntakeMessage', M.criminalIntakeMessage(crimCase, fakeMedia));
+checkMentions('presenceRequestDM', L.presenceRequestDM('111', '111'));
+checkMentions('lawyerRequestBroadcast', L.lawyerRequestBroadcast(fakeCase, 1, '111', 'x', '111'));
 checkMentions('reviewMessage', M.reviewMessage('complaint', fakeCase, 1, fakeMedia, '111', []));
 checkMentions(
   'intakeDeniedNotice:clerk is plaintiff',
   M.intakeDeniedNotice(fakeCase, 'x', fakeCase.plaintiff_id, { dmFailed: true }),
 );
+
+console.log('\nForm carry-over wiring');
+// Regression: the pre-fill only happens when a payload declares formKeys.
+// Without this every party gets a blank PDF and the profile is dead weight.
+for (const stage of ['complaint', 'summons', 'answer', 'contest', 'motion', 'notify', 'response']) {
+  const payload = M.stagePrompt(stage, fakeCase);
+  const expected = M.STAGE_FORMS[stage].filter((k) => config.forms[k]);
+  if (!expected.length) continue;
+  if (Array.isArray(payload.formKeys) && payload.formKeys.length === expected.length) {
+    ok(`stagePrompt:${stage} declares formKeys (${payload.formKeys.join(', ')})`);
+  } else {
+    fail(`stagePrompt:${stage}`, 'no formKeys — the handed-out form would never be pre-filled');
+  }
+}
+
+console.log('\nCounterparty stages');
+// Regression: `picksCounterparty` must actually drive the modals, or the
+// criminal pipeline dead-ends with no prosecutor attached.
+for (const [stage, meta] of Object.entries(STAGES)) {
+  if (!meta.picksCounterparty) continue;
+  const modal = modals.stepModal(stage);
+  const ids = modal.components.map((n) => n.component?.custom_id).filter(Boolean);
+  if (ids.includes('defendant_user') && ids.includes('defendant_id')) {
+    ok(`stepModal:${stage} collects the counterparty`);
+  } else {
+    fail(`stepModal:${stage}`, `collects ${ids.join(', ')} — cannot identify the other side`);
+  }
+  checkModal(`serviceApproveModal:${stage}`, modals.serviceApproveModal(1, null, stage));
+}
 
 console.log('\nWelcome message');
 checkMessage('welcomeMessage', M.welcomeMessage({ id: '111111111111111111', guild: { memberCount: 45 } }));
@@ -363,6 +456,22 @@ if (accented) fail('containers', 'accent_color is set — sidebar should be Disc
 else ok('containers use the default sidebar colour');
 
 console.log('\nHelpers');
+const buckets = L.splitRoll([
+  { id: '1', label: '_zeus' },
+  { id: '2', label: 'Ømar' },
+  { id: '3', label: '1337Lawyer' },
+  { id: '4', label: '#Ace' },
+  { id: '5', label: 'nora' },
+]);
+const same = (got, want) => [...got].sort().join('|') === [...want].sort().join('|');
+const inAM = buckets.am.map((l) => l.label);
+const inNZ = buckets.nz.map((l) => l.label);
+if (same(inAM, ['#Ace', '1337Lawyer']) && same(inNZ, ['_zeus', 'nora', 'Ømar'])) {
+  ok(`A-M / N-Z split ignores punctuation and accents (${inAM.join(', ')} | ${inNZ.join(', ')})`);
+} else {
+  fail('splitRoll', `A-M=[${inAM}] N-Z=[${inNZ}]`);
+}
+
 const letters = [1, 2, 26, 27, 28, 52, 53].map(fmt.exhibitLetter).join(' ');
 if (letters === 'A B Z AA AB AZ BA') ok(`exhibitLetter → ${letters}`);
 else fail('exhibitLetter', `unexpected sequence: ${letters}`);

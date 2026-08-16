@@ -80,6 +80,44 @@ const intakeModal = () => ({
   ],
 });
 
+/* ── 2b. Intake: contesting a criminal charge ────────────────── */
+
+const criminalModal = () => ({
+  custom_id: IDS.MODAL_CRIMINAL,
+  title: 'Contest a Criminal Charge',
+  components: [
+    label(
+      'What are you charged with?',
+      textInput(FIELDS.CHARGE, { placeholder: 'Grand theft auto, resisting without violence', max_length: 300 }),
+      'List every charge you are contesting.',
+    ),
+    label(
+      'Arresting agency and officer',
+      textInput(FIELDS.AGENCY, { placeholder: 'FHP - Trooper J. Salas #317', required: false, max_length: 200 }),
+      'Who arrested or cited you, if you know.',
+    ),
+    label(
+      'Citation, case or booking number',
+      textInput(FIELDS.CITATION, { placeholder: 'CW-4417Q', required: false, max_length: 100 }),
+      'Anything printed on the citation or booking sheet.',
+    ),
+    label(
+      'Why are you contesting this charge?',
+      textInput(FIELDS.REASON, {
+        style: 2,
+        placeholder: 'I was never read my rights and the vehicle was not reported stolen until after the stop.',
+        max_length: 1500,
+      }),
+      'Please provide in maximum detail why the charge is wrong.',
+    ),
+    label(
+      'Please provide any evidence.',
+      fileUpload(FIELDS.EVIDENCE, { required: false, max_values: 10 }),
+      'Bodycam, dashcam, photos, the citation itself.',
+    ),
+  ],
+});
+
 /* ── 3. Clerk denies intake ──────────────────────────────────── */
 
 const caseDenyModal = () => ({
@@ -103,21 +141,25 @@ const caseDenyModal = () => ({
 function stepModal(stage) {
   const meta = STAGES[stage];
 
-  if (stage === 'service') {
+  // Stages that identify the other side collect their handle and id here, so a
+  // clerk has something to confirm against when they pick the user.
+  if (meta.picksCounterparty) {
     return {
       custom_id: withArg(IDS.MODAL_STEP, stage),
       title: meta.modalTitle,
       components: [
         label(
-          'Video and/or photo of defendant being served.',
+          stage === 'notify'
+            ? 'Proof you served the State.'
+            : 'Video and/or photo of defendant being served.',
           fileUpload(FIELDS.UPLOAD, { max_values: 10 }),
         ),
         label(
-          'Discord user of the defendant',
+          stage === 'notify' ? 'Discord user of the prosecutor' : 'Discord user of the defendant',
           textInput(FIELDS.DEFENDANT_USER, { placeholder: 'Justauser_', max_length: 100 }),
         ),
         label(
-          'Defendant Discord ID',
+          stage === 'notify' ? 'Prosecutor Discord ID' : 'Defendant Discord ID',
           textInput(FIELDS.DEFENDANT_ID, { placeholder: '467238643627', max_length: 25 }),
         ),
       ],
@@ -153,14 +195,16 @@ const reviewDenyModal = (submissionId) => ({
 
 /* ── 6. Clerk approves service and identifies the defendant ──── */
 
-const serviceApproveModal = (submissionId, suggestedDefendantId) => ({
+const serviceApproveModal = (submissionId, suggestedDefendantId, stage = 'service') => ({
   custom_id: withArg(IDS.MODAL_SERVICE_OK, submissionId),
-  title: 'Civil Lawsuit 2/3',
+  title: stage === 'notify' ? 'Criminal Contest 2/3' : 'Civil Lawsuit 2/3',
   components: [
     label(
-      "Please select the defendant's user.",
+      stage === 'notify'
+        ? "Please select the prosecutor's user."
+        : "Please select the defendant's user.",
       userSelect(FIELDS.DEFENDANT_SELECT, {
-        placeholder: 'Select the defendant',
+        placeholder: stage === 'notify' ? 'Select the prosecutor' : 'Select the defendant',
         defaultUserId: suggestedDefendantId,
       }),
     ),
@@ -225,6 +269,40 @@ const govDetailsModal = (draftId) => ({
   ],
 });
 
+/* ── 7b. Leaving a lawyer review ─────────────────────────────── */
+
+const reviewModal = (lawyerId) => ({
+  custom_id: withArg(IDS.MODAL_REVIEW, lawyerId),
+  title: 'Leave a Review',
+  components: [
+    label(
+      'Your rating',
+      {
+        type: T.RADIO_GROUP,
+        custom_id: FIELDS.RATING,
+        required: true,
+        options: [
+          { label: '5 - Excellent', value: '5' },
+          { label: '4 - Good', value: '4' },
+          { label: '3 - Okay', value: '3' },
+          { label: '2 - Poor', value: '2' },
+          { label: '1 - Terrible', value: '1' },
+        ],
+      },
+      'One to five stars.',
+    ),
+    label(
+      'How did they do?',
+      textInput(FIELDS.REVIEW_BODY, {
+        style: 2,
+        placeholder: 'What a great lawyer he got all of my charges droped',
+        max_length: 700,
+      }),
+      'This will be shown publicly on their review page.',
+    ),
+  ],
+});
+
 /* ── 8. /addjudge ────────────────────────────────────────────── */
 
 const addJudgeModal = () => ({
@@ -239,6 +317,8 @@ const addJudgeModal = () => ({
 });
 
 module.exports = {
+  criminalModal,
+  reviewModal,
   govFilesModal,
   govDetailsModal,
   intakeModal,

@@ -9,6 +9,7 @@ const { IDS, FIELDS, parse } = require('../lib/ids');
 const { STAGES } = require('../stages');
 const F = require('./fields');
 const W = require('../ui/govWizard');
+const bar = require('../services/barService');
 const { startCountdown, cancelCountdown } = require('../lib/countdown');
 const cases = require('../services/caseService');
 
@@ -41,6 +42,57 @@ async function handleModal(interaction) {
         `Your case **${c.case_number}** has been filed: <#${channel.id}>\n` +
           'A clerk will review it shortly. You will not be able to type in that channel until it is opened.',
       );
+    }
+
+    /* ── contesting a criminal charge ─────────────────────── */
+
+    case IDS.MODAL_CRIMINAL: {
+      await interaction.deferReply({ flags: EPHEMERAL });
+
+      const charge = F.textOf(interaction, FIELDS.CHARGE).trim();
+      const reason = F.textOf(interaction, FIELDS.REASON).trim();
+      if (!charge) return interaction.editReply('You must say what you are charged with.');
+      if (!reason) return interaction.editReply('You must explain why you are contesting.');
+
+      const { c, channel } = await cases.createCriminalCase(interaction, {
+        charge,
+        agency: F.textOf(interaction, FIELDS.AGENCY).trim(),
+        citation: F.textOf(interaction, FIELDS.CITATION).trim(),
+        reason,
+        links: null,
+        files: F.filesOf(interaction, FIELDS.EVIDENCE),
+      });
+
+      return interaction.editReply(
+        `Your contest **${c.case_number}** has been filed: <#${channel.id}>\n` +
+          'A clerk will review it shortly. You will not be able to type in that channel until it is opened.',
+      );
+    }
+
+    /* ── leaving a lawyer review ──────────────────────────── */
+
+    case IDS.MODAL_REVIEW: {
+      const lawyerId = String(arg);
+      if (!store.isClientOf(lawyerId, interaction.user.id)) {
+        return interaction.reply({
+          content: 'Only clients of this attorney can leave a review.',
+          flags: EPHEMERAL,
+        });
+      }
+
+      const rating = Number(F.radioOf(interaction, FIELDS.RATING)) || 0;
+      const body = F.textOf(interaction, FIELDS.REVIEW_BODY).trim();
+      if (rating < 1 || rating > 5) {
+        return interaction.reply({ content: 'Pick a rating from 1 to 5.', flags: EPHEMERAL });
+      }
+      if (!body) {
+        return interaction.reply({ content: 'Write a sentence or two.', flags: EPHEMERAL });
+      }
+
+      store.addReview(lawyerId, interaction.user.id, rating, body);
+
+      await interaction.deferUpdate();
+      return interaction.editReply(await bar.profilePayload(interaction, lawyerId, 0));
     }
 
     /* ── government-claim wizard ──────────────────────────── */
@@ -82,12 +134,24 @@ async function handleModal(interaction) {
       if (!department) return interaction.reply({ content: 'Name the department.', flags: EPHEMERAL });
       if (!description) return interaction.reply({ content: 'Describe what happened.', flags: EPHEMERAL });
 
+      // Only a bar-certified member can be named as counsel. Anyone else is
+      // ignored: naming them would hand a stranger access to a private case
+      // channel and register the filer as their "client", which is all it
+      // takes to post reviews on that person's profile.
+      const pickedAttorney = F.userIdOf(interaction, FIELDS.GOV_ATTORNEY);
+      let attorneyId = null;
+      if (pickedAttorney) {
+        const member = await interaction.guild.members.fetch(pickedAttorney).catch(() => null);
+        if (perms.isLawyer(member)) attorneyId = pickedAttorney;
+      }
+
       const payload = {
         department,
         description,
         compensation: F.textOf(interaction, FIELDS.GOV_COMPENSATION).trim(),
         employees: F.userIdsOf(interaction, FIELDS.GOV_EMPLOYEES),
-        attorneyId: F.userIdOf(interaction, FIELDS.GOV_ATTORNEY),
+        attorneyId,
+        attorneyRejected: Boolean(pickedAttorney) && !attorneyId,
       };
 
       // Consume the draft BEFORE the slow work (channel creation, downloads,
@@ -103,7 +167,9 @@ async function handleModal(interaction) {
 
       const { c, channel } = await cases.createDepartmentCase(interaction, { ...draft, payload });
 
-      return interaction.editReply(W.govFiled(c.case_number, channel.id));
+      return interaction.editReply(
+        W.govFiled(c.case_number, channel.id, { attorneyRejected: payload.attorneyRejected }),
+      );
     }
 
     /* ── clerk denies intake ──────────────────────────────── */
@@ -205,7 +271,9 @@ async function handleModal(interaction) {
         return interaction.editReply('The defendant cannot be the same person as the plaintiff.');
       }
 
-      if (c.stage !== 'service') return interaction.editReply('That step is no longer current.');
+      if (!STAGES[c.stage]?.picksCounterparty) {
+        return interaction.editReply('That step is no longer current.');
+      }
       if (!store.resolveSubmission(sub.id, 'approved', null, interaction.user.id)) {
         return interaction.editReply('Another clerk just handled this.');
       }

@@ -22,11 +22,15 @@ const T = {
   CONTAINER: 17,
   LABEL: 18,
   FILE_UPLOAD: 19,
+  RADIO_GROUP: 21,
+  CHECKBOX_GROUP: 22,
+  CHECKBOX: 23,
 };
 
 const STYLE = { PRIMARY: 1, SECONDARY: 2, SUCCESS: 3, DANGER: 4, LINK: 5 };
 
 const banner = () => ({ type: T.GALLERY, items: [{ media: { url: config.brand.banner } }] });
+const bannerOf = (url) => ({ type: T.GALLERY, items: [{ media: { url } }] });
 const footer = () => ({ type: T.GALLERY, items: [{ media: { url: config.brand.footer } }] });
 const text = (content) => ({ type: T.TEXT, content });
 const sep = (spacing = 2) => ({ type: T.SEPARATOR, spacing });
@@ -58,6 +62,31 @@ function container(bodyComponents) {
     type: T.CONTAINER,
     components: [banner(), ...bodyComponents.filter(Boolean), sep(2), footer()],
   };
+}
+
+/** Same shape, but with a different header image (requests, reviews). */
+function containerWith(url, bodyComponents) {
+  return {
+    type: T.CONTAINER,
+    components: [bannerOf(url), ...bodyComponents.filter(Boolean), sep(2), footer()],
+  };
+}
+
+/** Title line using a specific emoji instead of the court seal. */
+const titleWith = (emoji, line) => `# ${emoji} ${line}`;
+
+/**
+ * `<:name:123>` / `<a:name:123>` -> the object a button's `emoji` field wants.
+ * A plain unicode emoji comes back as `{ name }`. Anything else -> undefined,
+ * so the button simply renders without an icon instead of erroring.
+ */
+function parseEmoji(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return undefined;
+  const m = s.match(/^<(a)?:([\w~]+):(\d+)>$/);
+  if (m) return { id: m[3], name: m[2], animated: Boolean(m[1]) };
+  if (/^<|>$/.test(s)) return undefined;
+  return { name: s };
 }
 
 /** Container without the trailing separator+footer pair already applied. */
@@ -113,6 +142,10 @@ module.exports = {
   T,
   STYLE,
   banner,
+  bannerOf,
+  containerWith,
+  titleWith,
+  parseEmoji,
   footer,
   text,
   sep,

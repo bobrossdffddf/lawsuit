@@ -9,6 +9,8 @@ const { STAGES } = require('../stages');
 const M = require('../ui/messages');
 const modals = require('../ui/modals');
 const W = require('../ui/govWizard');
+const L = require('../ui/lawyers');
+const bar = require('../services/barService');
 const { startCountdown, cancelCountdown } = require('../lib/countdown');
 const cases = require('../services/caseService');
 
@@ -123,6 +125,65 @@ async function handleButton(interaction) {
     case IDS.PANEL_ACTIVE:
       return interaction.reply(M.activeCasesList(store.getActiveCases()));
 
+    case IDS.PANEL_CRIMINAL:
+      return interaction.showModal(modals.criminalModal());
+
+    /* ── lawyer reviews ───────────────────────────────────── */
+
+    case IDS.REVIEW_BACK: {
+      await interaction.deferUpdate();
+      return interaction.editReply(L.reviewPanel(await bar.roll(interaction.guild)));
+    }
+
+    case IDS.REVIEW_PAGE: {
+      const [lawyerId, pageRaw] = String(arg).split('.');
+      await interaction.deferUpdate();
+      return interaction.editReply(
+        await bar.profilePayload(interaction, lawyerId, Number(pageRaw) || 0),
+      );
+    }
+
+    case IDS.REVIEW_LEAVE: {
+      const lawyerId = String(arg);
+      if (!store.isClientOf(lawyerId, interaction.user.id)) {
+        return nope(interaction, 'Only clients of this attorney can leave a review.');
+      }
+      return interaction.showModal(modals.reviewModal(lawyerId));
+    }
+
+    /* ── an attorney takes a request ──────────────────────── */
+
+    case IDS.LAWYER_ACCEPT: {
+      if (!perms.isLawyer(interaction.member)) {
+        return nope(interaction, 'Only bar-certified attorneys can accept a request.');
+      }
+      const request = store.getRequest(Number(arg));
+      if (!request) return nope(interaction, 'That request no longer exists.');
+      if (request.accepted_by) {
+        return nope(interaction, `Already taken by <@${request.accepted_by}>.`);
+      }
+      const c = store.getCaseById(request.case_id);
+      if (!c) return nope(interaction, 'That case no longer exists.');
+      if (request.for_user_id === interaction.user.id) {
+        return nope(interaction, 'You cannot represent yourself through a request.');
+      }
+
+      await interaction.deferUpdate();
+      const taken = await cases.acceptLawyerRequest(interaction, request, c);
+      if (!taken) {
+        return interaction.followUp({ content: 'Another attorney just took it.', flags: EPHEMERAL });
+      }
+      return interaction.editReply(
+        L.lawyerRequestBroadcast(
+          c,
+          request.id,
+          request.for_user_id,
+          request.details ?? '',
+          interaction.user.id,
+        ),
+      );
+    }
+
     /* ── intake decision ──────────────────────────────────── */
 
     case IDS.CASE_OPEN: {
@@ -173,7 +234,8 @@ async function handleButton(interaction) {
       }
 
       const expectedActor = STAGES[stage].actor === 'defendant' ? c.defendant_id : c.plaintiff_id;
-      if (interaction.user.id !== expectedActor && !perms.isAdmin(interaction.member)) {
+      // No admin bypass: only the actual party may file on their own case.
+      if (interaction.user.id !== expectedActor) {
         return nope(
           interaction,
           STAGES[stage].actor === 'defendant'
@@ -227,9 +289,12 @@ async function handleButton(interaction) {
         );
       }
 
-      // Approving the proof of service needs the clerk to identify the defendant.
-      if (sub.stage === 'service') {
-        return interaction.showModal(modals.serviceApproveModal(sub.id, sub.payload?.defendantId));
+      // Stages that bring in the other side need the clerk to identify them
+      // first — civil service picks the defendant, criminal notify the State.
+      if (STAGES[sub.stage]?.picksCounterparty) {
+        return interaction.showModal(
+          modals.serviceApproveModal(sub.id, sub.payload?.defendantId, sub.stage),
+        );
       }
 
       await interaction.deferReply({ flags: EPHEMERAL });
@@ -244,4 +309,16 @@ async function handleButton(interaction) {
   }
 }
 
-module.exports = { handleButton };
+/** The two attorney dropdowns on the /review panel. */
+async function handleSelect(interaction) {
+  const { base } = parse(interaction.customId);
+  if (base !== IDS.REVIEW_PICK_AM && base !== IDS.REVIEW_PICK_NZ) return undefined;
+
+  const lawyerId = interaction.values?.[0];
+  if (!lawyerId) return undefined;
+
+  await interaction.deferUpdate();
+  return interaction.editReply(await bar.profilePayload(interaction, lawyerId, 0));
+}
+
+module.exports = { handleButton, handleSelect };

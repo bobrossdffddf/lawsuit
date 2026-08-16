@@ -158,19 +158,23 @@ function govFiling() {
 }
 
 /** Terminal panel shown once the case channel exists. */
-function govFiled(caseNumber, channelId) {
+function govFiled(caseNumber, channelId, opts = {}) {
+  const lines = [
+    `${U.title('Suing a Department')}\n` +
+      `Your claim **${caseNumber}** has been filed: <#${channelId}>\n\n` +
+      '> A clerk will review your notice of claim package shortly. You will not be able to type ' +
+      'in that channel until the claim is opened.',
+  ];
+  if (opts.attorneyRejected) {
+    lines.push(
+      '-# The person you named as your attorney is not bar certified, so they were not added. ' +
+        'Ask a clerk to request counsel for you.',
+    );
+  }
+
   return {
     flags: V2,
-    components: [
-      U.container([
-        U.text(
-          `${U.title('Suing a Department')}\n` +
-            `Your claim **${caseNumber}** has been filed: <#${channelId}>\n\n` +
-            '> A clerk will review your notice of claim package shortly. You will not be able to type ' +
-            'in that channel until the claim is opened.',
-        ),
-      ]),
-    ],
+    components: [U.container([U.text(lines.join('\n'))])],
     allowedMentions: { parse: [] },
   };
 }

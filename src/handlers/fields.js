@@ -32,6 +32,15 @@ function userIdOf(interaction, customId) {
   }
 }
 
+/** The value chosen in a modal radio group. */
+function radioOf(interaction, customId, fallback = '') {
+  try {
+    return interaction.fields.getRadioGroup(customId, false) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** Every user picked in a multi-value user select. */
 function userIdsOf(interaction, customId) {
   try {
@@ -62,4 +71,4 @@ function filesOf(interaction, customId) {
   }));
 }
 
-module.exports = { textOf, stringSelectOf, userIdOf, userIdsOf, filesOf };
+module.exports = { textOf, stringSelectOf, radioOf, userIdOf, userIdsOf, filesOf };

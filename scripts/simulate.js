@@ -29,6 +29,7 @@ config.dbPath = tmpDb;
 const store = require('../src/db');
 const cases = require('../src/services/caseService');
 const { startCountdown, cancelCountdown } = require('../src/lib/countdown');
+const formsLib = require('../src/lib/forms');
 
 let failures = 0;
 const assert = (cond, label) => {
@@ -145,12 +146,16 @@ function makeInteraction(userId, channel) {
 
 /* ── a tiny file host, so uploads take the real download path ──── */
 
+const HOSTED = {
+  '/complaint.pdf': 'CV-01_Civil_Complaint.pdf',
+  '/summons.pdf': 'CV-02_Summons.pdf',
+  '/answer.pdf': 'CV-03_Answer_and_Affirmative_Defenses.pdf',
+};
+
 function startFileHost() {
-  const files = {
-    '/complaint.pdf': path.join(config.formsDir, 'CV-01_Civil_Complaint.pdf'),
-    '/summons.pdf': path.join(config.formsDir, 'CV-02_Summons.pdf'),
-    '/answer.pdf': path.join(config.formsDir, 'CV-03_Answer_and_Affirmative_Defenses.pdf'),
-  };
+  const files = Object.fromEntries(
+    Object.entries(HOSTED).map(([route, name]) => [route, path.join(config.formsDir, name)]),
+  );
   const server = http.createServer((req, res) => {
     const file = files[req.url];
     if (!file) {
@@ -169,12 +174,14 @@ function startFileHost() {
 
 (async () => {
   const { server, port } = await startFileHost();
+  // `name` is what the filer called their upload; the bytes come from whichever
+  // real form the little HTTP host is serving on that route.
   const upload = (route, name) => [
     {
       url: `http://127.0.0.1:${port}${route}`,
       filename: name,
       content_type: 'application/pdf',
-      size: fs.statSync(path.join(config.formsDir, name.replace('uploaded-', ''))).size,
+      size: fs.statSync(path.join(config.formsDir, HOSTED[route])).size,
     },
   ];
   console.log('\nFiling');
@@ -384,6 +391,83 @@ function startFileHost() {
     'closing twice is a no-op',
   );
 
+  console.log('\nCriminal contest pipeline');
+  const accused = makeInteraction('555555555555555555', null);
+  const { c: crim, channel: crimChannel } = await cases.createCriminalCase(accused, {
+    charge: 'Grand theft auto',
+    agency: 'FHP - Trooper J. Salas #317',
+    citation: 'CW-4417Q',
+    reason: 'I was never read my rights and the vehicle was not reported stolen until after the stop.',
+    links: null,
+    files: [],
+  });
+  assert(/^\d{2}-CR-\d{6}$/.test(crim.case_number), `criminal docket ${crim.case_number}`);
+  assert(crim.kind === 'criminal', 'filed as a criminal contest');
+
+  const crimClerk = makeInteraction(CLERK, crimChannel);
+  let cc = await cases.openCase(crimClerk, crim);
+  assert(cc.stage === 'contest', 'criminal opens at the contest stage');
+
+  let cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'contest',
+    upload('/complaint.pdf', 'CR-08_Notice_of_Appearance_of_Counsel.pdf'));
+  cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
+  assert(cc.stage === 'motion', 'contest -> motion');
+
+  cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'motion',
+    upload('/summons.pdf', 'CR-12_Motion_to_Suppress_Evidence.pdf'));
+  cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
+  assert(cc.stage === 'notify', 'motion -> notify');
+
+  cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'notify',
+    upload('/answer.pdf', 'GN-05_Certificate_of_Service.pdf'),
+    { defendantUser: 'asa_ortiz', defendantId: '666666666666666666' });
+  store.resolveSubmission(cid, 'approved', null, CLERK);
+  cc = await cases.attachDefendant(crimClerk, store.getCaseById(cc.id), '666666666666666666');
+  assert(cc.stage === 'response', 'notify -> response (the State is added)');
+
+  cid = await cases.submitStage(makeInteraction('666666666666666666', crimChannel), cc, 'response',
+    upload('/complaint.pdf', 'CR-03_Information.pdf'));
+  cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
+  assert(cc.status === 'filed' && Boolean(cc.discovery_thread_id), 'criminal case is filed with discovery');
+
+  console.log('\nForm carry-over');
+  const profile = store.getFields(cc.id);
+  assert(profile.case_number === cc.case_number, `case number seeded (${profile.case_number})`);
+  assert(profile.arresting_agency === 'FHP - Trooper J. Salas #317', 'arresting agency seeded');
+  assert(profile.division === 'Criminal', 'division seeded as Criminal');
+
+  // Hand out a form and confirm it really arrives pre-filled.
+  const [att] = await formsLib.attachmentsFor(['CR03'], profile);
+  const filledBack = await formsLib.readFilledFields(att.attachment);
+  assert(filledBack.case_number === cc.case_number, 'a handed-out form carries the case number');
+  assert(!('judge_sig' in filledBack), 'signature blocks are never carried forward');
+
+  // 100-char cap is gone from the shipped assets.
+  const long = 'y'.repeat(300);
+  const wide = await formsLib.fillForm('CV01', { case_number: long });
+  const wideBack = await formsLib.readFilledFields(wide);
+  assert(wideBack.case_number?.length === 300, `300-char value survives (${wideBack.case_number?.length})`);
+
+  console.log('\nLawyers');
+  const LAWYER = '777777777777777777';
+  const CLIENT = '888888888888888888';
+  store.seeLawyer(LAWYER, Date.now() - 86400000);
+  store.addClient(LAWYER, CLIENT, cc.id, CLERK);
+  assert(store.isClientOf(LAWYER, CLIENT), 'client registered');
+  assert(!store.isClientOf(LAWYER, '999000999000999000'), 'a stranger is not a client');
+
+  store.addReview(LAWYER, CLIENT, 5, 'Got all of my charges dropped.');
+  store.addReview(LAWYER, CLIENT, 3, 'Missed my first appearance.');
+  const stats = store.getReviewStats(LAWYER);
+  assert(stats.n === 2 && Number(stats.avg) === 4, `2 reviews averaging ${stats.avg}`);
+
+  const reqId = store.createRequest(cc.id, CLIENT, CLERK);
+  assert(store.acceptRequest(reqId, LAWYER), 'first attorney takes the request');
+  assert(!store.acceptRequest(reqId, '123123123123123123'), 'a second attorney cannot take it');
+
+  store.addMember(cc.id, LAWYER, 'attorney', CLERK);
+  assert(store.countCasesFor(LAWYER, 'attorney') === 1, 'cases handled counts attorney memberships');
+
   console.log('\nWizard countdown');
 
   // A cancelled countdown must stop editing, or it redraws a live form over
@@ -422,12 +506,13 @@ function startFileHost() {
 
   console.log('\nActive docket');
   const active = store.getActiveCases();
-  assert(active.length === 1, `${active.length} active case (denied, unopened and closed are excluded)`);
+  assert(active.length === 2, `${active.length} active cases (denied, unopened and closed excluded)`);
 
   server.close();
   fs.rmSync(path.join(config.caseFilesDir, created.case_number), { recursive: true, force: true });
   fs.rmSync(path.join(config.caseFilesDir, second.c.case_number), { recursive: true, force: true });
   fs.rmSync(path.join(config.caseFilesDir, govCase.case_number), { recursive: true, force: true });
+  fs.rmSync(path.join(config.caseFilesDir, crim.case_number), { recursive: true, force: true });
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
   fs.rmSync(`${tmpDb}-shm`, { force: true });

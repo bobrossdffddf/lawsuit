@@ -9,8 +9,16 @@ const hasRole = (member, roleId) => Boolean(roleId) && member?.roles?.cache?.has
 const isAdmin = (member) =>
   Boolean(member?.permissions?.has(PermissionFlagsBits.Administrator));
 
-const isClerk = (member) => isAdmin(member) || hasRole(member, config.roles.clerk);
-const isJudge = (member) => isAdmin(member) || hasRole(member, config.roles.judge);
+/**
+ * Court decisions are gated on the CLERK ROLE, not on Discord permissions.
+ * Having Administrator does not make you a clerk — set ADMIN_OVERRIDE=true in
+ * .env if you want that back.
+ */
+const override = (member) => config.adminOverride && isAdmin(member);
+
+const isClerk = (member) => hasRole(member, config.roles.clerk) || override(member);
+const isJudge = (member) => hasRole(member, config.roles.judge) || override(member);
+const isLawyer = (member) => hasRole(member, config.roles.lawyer) || override(member);
 
 /** Clerks, judges and admins — the "court staff" tier. */
 const isStaff = (member) => isClerk(member) || isJudge(member);
@@ -22,4 +30,4 @@ const canPostPanel = (member) => {
   return Boolean(member?.permissions?.has(PermissionFlagsBits.ManageGuild));
 };
 
-module.exports = { isAdmin, isClerk, isJudge, isStaff, canPostPanel, hasRole };
+module.exports = { isAdmin, isClerk, isJudge, isLawyer, isStaff, canPostPanel, hasRole };

@@ -80,6 +80,64 @@ CREATE TABLE IF NOT EXISTS drafts (
   created_at INTEGER NOT NULL
 );
 
+-- Answers harvested from filed PDFs, replayed into every later form on the
+-- same case so nobody retypes their case number five times.
+CREATE TABLE IF NOT EXISTS case_fields (
+  case_id    INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  name       TEXT    NOT NULL,
+  value      TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (case_id, name)
+);
+
+-- Everyone with access to a case, and in what capacity.
+CREATE TABLE IF NOT EXISTS case_members (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id    INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  user_id    TEXT    NOT NULL,
+  role       TEXT    NOT NULL DEFAULT 'party',   -- party|attorney|judge|clerk
+  added_by   TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (case_id, user_id, role)
+);
+
+-- First time the bot saw someone holding the bar role.
+CREATE TABLE IF NOT EXISTS lawyers (
+  user_id      TEXT PRIMARY KEY,
+  barred_since INTEGER NOT NULL
+);
+
+-- Who an attorney has represented. Only clients may review them.
+CREATE TABLE IF NOT EXISTS lawyer_clients (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  lawyer_id  TEXT NOT NULL,
+  client_id  TEXT NOT NULL,
+  case_id    INTEGER REFERENCES cases(id) ON DELETE SET NULL,
+  added_by   TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lawyer_reviews (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  lawyer_id  TEXT    NOT NULL,
+  client_id  TEXT    NOT NULL,
+  rating     INTEGER NOT NULL,
+  body       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lawyer_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id     INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  for_user_id TEXT    NOT NULL,
+  requested_by TEXT   NOT NULL,
+  channel_id  TEXT,
+  message_id  TEXT,
+  accepted_by TEXT,
+  accepted_at INTEGER,
+  created_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS counters (
   key   TEXT PRIMARY KEY,
   value INTEGER NOT NULL
@@ -89,6 +147,10 @@ CREATE INDEX IF NOT EXISTS idx_cases_channel ON cases(channel_id);
 CREATE INDEX IF NOT EXISTS idx_cases_status  ON cases(status);
 CREATE INDEX IF NOT EXISTS idx_cases_thread  ON cases(discovery_thread_id);
 CREATE INDEX IF NOT EXISTS idx_sub_case      ON submissions(case_id, stage, status);
+CREATE INDEX IF NOT EXISTS idx_members_case  ON case_members(case_id);
+CREATE INDEX IF NOT EXISTS idx_members_user  ON case_members(user_id, role);
+CREATE INDEX IF NOT EXISTS idx_clients       ON lawyer_clients(lawyer_id, client_id);
+CREATE INDEX IF NOT EXISTS idx_reviews       ON lawyer_reviews(lawyer_id);
 `);
 
 /* ── migrations ───────────────────────────────────────────────
@@ -109,6 +171,9 @@ ensureColumn('cases', 'employees', 'employees TEXT');
 ensureColumn('cases', 'attorney_id', 'attorney_id TEXT');
 ensureColumn('cases', 'closed_by', 'closed_by TEXT');
 ensureColumn('cases', 'closed_at', 'closed_at INTEGER');
+// Lawyer requests remember their blurb and the notice posted in the case channel.
+ensureColumn('lawyer_requests', 'details', 'details TEXT');
+ensureColumn('lawyer_requests', 'notice_message_id', 'notice_message_id TEXT');
 
 const now = () => Date.now();
 
@@ -187,6 +252,56 @@ const stmts = {
   closeCase: db.prepare(`
     UPDATE cases SET status = 'closed', closed_by = ?, closed_at = ?, updated_at = ?
     WHERE id = ? AND status != 'closed'
+  `),
+
+  putField: db.prepare(`
+    INSERT INTO case_fields (case_id, name, value, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(case_id, name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `),
+  fieldsFor: db.prepare('SELECT name, value FROM case_fields WHERE case_id = ?'),
+
+  addMember: db.prepare(`
+    INSERT INTO case_members (case_id, user_id, role, added_by, created_at)
+    VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
+  `),
+  membersOf: db.prepare('SELECT * FROM case_members WHERE case_id = ?'),
+  caseCountFor: db.prepare(
+    'SELECT COUNT(DISTINCT case_id) AS n FROM case_members WHERE user_id = ? AND role = ?',
+  ),
+
+  seeLawyer: db.prepare('INSERT INTO lawyers (user_id, barred_since) VALUES (?, ?) ON CONFLICT DO NOTHING'),
+  lawyer: db.prepare('SELECT * FROM lawyers WHERE user_id = ?'),
+
+  addClient: db.prepare(`
+    INSERT INTO lawyer_clients (lawyer_id, client_id, case_id, added_by, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  isClient: db.prepare(
+    'SELECT 1 AS ok FROM lawyer_clients WHERE lawyer_id = ? AND client_id = ? LIMIT 1',
+  ),
+  clientsOf: db.prepare(
+    'SELECT DISTINCT client_id FROM lawyer_clients WHERE lawyer_id = ? ORDER BY client_id',
+  ),
+
+  addReview: db.prepare(`
+    INSERT INTO lawyer_reviews (lawyer_id, client_id, rating, body, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  reviewsOf: db.prepare('SELECT * FROM lawyer_reviews WHERE lawyer_id = ? ORDER BY created_at DESC'),
+  reviewStats: db.prepare(
+    'SELECT COUNT(*) AS n, AVG(rating) AS avg FROM lawyer_reviews WHERE lawyer_id = ?',
+  ),
+
+  addRequest: db.prepare(`
+    INSERT INTO lawyer_requests (case_id, for_user_id, requested_by, details, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `),
+  setRequestNotice: db.prepare('UPDATE lawyer_requests SET notice_message_id = ? WHERE id = ?'),
+  requestById: db.prepare('SELECT * FROM lawyer_requests WHERE id = ?'),
+  setRequestMessage: db.prepare('UPDATE lawyer_requests SET channel_id = ?, message_id = ? WHERE id = ?'),
+  acceptRequest: db.prepare(`
+    UPDATE lawyer_requests SET accepted_by = ?, accepted_at = ?
+    WHERE id = ? AND accepted_by IS NULL
   `),
 };
 
@@ -302,6 +417,56 @@ module.exports = {
 
   /** @returns {boolean} true if this caller closed it (false = already closed). */
   closeCase: (caseId, byId) => stmts.closeCase.run(byId, now(), now(), caseId).changes === 1,
+
+  /* ── carry-forward form answers ───────────────────────── */
+
+  /** Merges harvested PDF answers into the case profile. */
+  mergeFields: db.transaction((caseId, fields) => {
+    const ts = now();
+    let n = 0;
+    for (const [name, value] of Object.entries(fields ?? {})) {
+      if (!name || value === undefined || value === null || String(value).trim() === '') continue;
+      stmts.putField.run(caseId, name, String(value), ts);
+      n += 1;
+    }
+    return n;
+  }),
+  getFields(caseId) {
+    const out = {};
+    for (const row of stmts.fieldsFor.all(caseId)) out[row.name] = row.value;
+    return out;
+  },
+
+  /* ── case membership ──────────────────────────────────── */
+
+  addMember: (caseId, userId, role = 'party', addedBy = null) =>
+    stmts.addMember.run(caseId, userId, role, addedBy, now()),
+  getMembers: (caseId) => stmts.membersOf.all(caseId),
+  countCasesFor: (userId, role = 'attorney') => stmts.caseCountFor.get(userId, role)?.n ?? 0,
+
+  /* ── the bar ──────────────────────────────────────────── */
+
+  seeLawyer: (userId, since) => stmts.seeLawyer.run(userId, since ?? now()),
+  getLawyer: (userId) => stmts.lawyer.get(userId),
+  addClient: (lawyerId, clientId, caseId, addedBy) =>
+    stmts.addClient.run(lawyerId, clientId, caseId ?? null, addedBy ?? null, now()),
+  isClientOf: (lawyerId, clientId) => Boolean(stmts.isClient.get(lawyerId, clientId)),
+  getClients: (lawyerId) => stmts.clientsOf.all(lawyerId).map((r) => r.client_id),
+
+  addReview: (lawyerId, clientId, rating, body) =>
+    stmts.addReview.run(lawyerId, clientId, rating, body, now()),
+  getReviews: (lawyerId) => stmts.reviewsOf.all(lawyerId),
+  getReviewStats: (lawyerId) => stmts.reviewStats.get(lawyerId) ?? { n: 0, avg: null },
+
+  /* ── lawyer requests ──────────────────────────────────── */
+
+  createRequest: (caseId, forUserId, requestedBy, details = null) =>
+    stmts.addRequest.run(caseId, forUserId, requestedBy, details, now()).lastInsertRowid,
+  setRequestNotice: (id, messageId) => stmts.setRequestNotice.run(messageId, id),
+  getRequest: (id) => stmts.requestById.get(id),
+  setRequestMessage: (id, channelId, messageId) => stmts.setRequestMessage.run(channelId, messageId, id),
+  /** @returns {boolean} true if this attorney is the one that got it. */
+  acceptRequest: (id, lawyerId) => stmts.acceptRequest.run(lawyerId, now(), id).changes === 1,
 
   addExhibit: (caseId, letter, filename, url, uploaderId, messageId) =>
     stmts.insertExhibit.run(caseId, letter, filename, url, uploaderId, messageId, now()),

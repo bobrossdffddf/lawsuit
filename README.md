@@ -22,6 +22,7 @@ lawsuit panel with three buttons:
 | **File a Lawsuit** | Opens the Civil Lawsuit modal (defendant, reason, links, file evidence) |
 | **Sue a Department** | Starts the private four-panel government-claim wizard (below) |
 | **Active Civil Cases** | Private list of every open case, its stage, judge, and channel |
+| **Contest a Criminal Charge** | Opens the criminal contest modal (charge, agency, citation, grounds, evidence) |
 
 ### One message per case channel
 
@@ -60,6 +61,59 @@ filed    discovery thread opens
 ```
 
 Cancel at any point discards everything; nothing is filed.
+
+### Contesting a criminal charge
+
+Filing creates `26-CR-000001` on its own docket, in `CRIMINAL_CASE_CATEGORY_ID`.
+The pipeline mirrors the civil one exactly:
+
+```
+intake   clerk presses Open Case or Deny Case
+   ↓
+contest  accused files CR-08 (counsel) or CR-09 (appointed counsel)   [1/3]
+   ↓
+motion   accused files CR-12 (suppress) or GN-01 (general motion)     [2/3]
+   ↓
+notify   accused proves they served the State + names the prosecutor  [2/3]
+   ↓     → clerk approves via a user picker, prosecutor joins the case
+response prosecutor files CR-03 Information                           [3/3]
+   ↓
+filed    discovery thread opens
+```
+
+### Forms fill themselves in
+
+Every form the bot hands out is pre-filled from a **case profile**. The profile
+is seeded at filing with the case number, division, party names and agency, then
+grows every time someone uploads a completed PDF — the bot reads their answers
+back out and replays them into the next form. Nobody types their case number
+twice.
+
+Signature blocks, dated signature lines, judicial dispositions
+(`granted`/`denied`) and anything the court schedules are **never** carried
+forward — see `NEVER_CARRY` in `src/lib/forms.js`.
+
+The shipped forms were also cleaned on install: the 100-character `/MaxLen` cap
+was stripped from all 2,183 capped fields, and the sample data every form
+shipped with ("Marcus D. Reeves", case `26-CC-000915`) was cleared, so litigants
+get a genuine blank.
+
+### Lawyers
+
+`/review` opens a private panel listing everyone with `LAWYER_ROLE_ID`, split
+A-M / N-Z by the first letter of their per-server name. Picking one shows their
+profile — barred since, cases handled, average rating — and their reviews, five
+to a page. **Only registered clients of that attorney can leave a review**;
+everyone else sees the button greyed out.
+
+A client relationship is created three ways: a clerk runs `/lawyeradd`, an
+attorney accepts a `/lawreq`, or a filer names a bar-certified attorney in the
+government-claim wizard.
+
+`/lawreq @user` (clerks) posts a notice in the case channel and broadcasts to
+`LAWYER_REQUEST_CHANNEL_ID` with an Accept button. The first attorney to press
+it gets the case: the button greys out, they are added to the channel and the
+discovery thread, and the in-channel notice updates to name them.
 
 ### The case pipeline
 
@@ -104,6 +158,10 @@ Any file dropped in the discovery thread is replied to with a
 | `/add user:` | clerks & judges | Adds someone to the case channel and the discovery thread |
 | `/addjudge` | clerks & judges | User-select modal, appoints the judge, posts the appointment notice |
 | `/close` | clerks | Closes the case. Asks three times, then locks the channel and archives discovery |
+| `/review` | anyone | Attorney directory, profiles and reviews |
+| `/lawyeradd` | clerks | Registers a user as an attorney's client, so they can review them |
+| `/lawreq user:` | clerks | Requests counsel for a party and broadcasts it to the bar |
+| `/request user:` | staff & attorneys | DMs someone asking them to join the court voice channel |
 
 ---
 
@@ -206,6 +264,11 @@ that matter most:
 | Key | Meaning |
 |---|---|
 | `CLERK_ROLE_ID` | Can open/deny cases and approve/deny every step |
+| `LAWYER_ROLE_ID` | The bar. Listed in `/review`, pinged for lawyer requests |
+| `ADMIN_OVERRIDE` | `false` by default — administrators do **not** count as clerks |
+| `CRIMINAL_CASE_CATEGORY_ID` | Where criminal contests are created (blank = civil category) |
+| `LAWYER_REQUEST_CHANNEL_ID` | Where `/lawreq` broadcasts go |
+| `COURT_VOICE_CHANNEL_ID` | The voice channel `/request` points people to |
 | `JUDGE_ROLE_ID` | Read/write on every case channel; assigned via `/addjudge` |
 | `CIVIL_CASE_CATEGORY_ID` | Where case channels are created |
 | `SUPPORT_CHANNEL_ID` | Linked in the "if you have questions" copy |
@@ -350,8 +413,10 @@ src/
     messages.js           every message the bot sends
     modals.js             every modal
     govWizard.js          the four ephemeral government-claim panels
+    lawyers.js            review panel, attorney profiles, request embeds
   services/
     caseService.js        the state machine: channels, permissions, transitions
+    barService.js         the bar roll, attorney profiles
   handlers/
     buttons.js  modals.js  commands.js  messages.js  fields.js
 scripts/

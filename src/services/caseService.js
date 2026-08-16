@@ -6,7 +6,9 @@ const config = require('../config');
 const store = require('../db');
 const fmt = require('../lib/format');
 const { archiveUploads, buildMedia, EMPTY_MEDIA } = require('../lib/media');
+const forms = require('../lib/forms');
 const M = require('../ui/messages');
+const L = require('../ui/lawyers');
 const { STAGES, nextStage, openingStage } = require('../stages');
 
 /* ── permission sets ─────────────────────────────────────────────
@@ -39,13 +41,56 @@ const grant = (names, value = true) => Object.fromEntries(names.map((n) => [n, v
    ────────────────────────────────────────────────────────────── */
 
 async function showCaseMessage(channel, c, payload) {
+  const body = { ...payload };
+
+  // Hand out court forms already filled in with everything this case knows —
+  // case number, party names, agency, whatever a previous filing revealed.
+  if (body.formKeys?.length) {
+    const profile = store.getFields(c.id);
+    body.files = await forms.attachmentsFor(body.formKeys, profile);
+    delete body.formKeys;
+  }
+
   const previous = store.getCaseById(c.id)?.case_message_id;
   if (previous) {
     await channel.messages.delete(previous).catch(() => {});
   }
-  const sent = await channel.send(payload);
+  const sent = await channel.send(body);
   store.setCaseMessage(c.id, sent.id);
   return sent;
+}
+
+/**
+ * Seeds the carry-forward profile with what the court already knows, so the
+ * very first form a party downloads has their case number and names in it.
+ */
+function seedProfile(c, extra = {}) {
+  const division =
+    c.kind === 'criminal' ? 'Criminal' : c.kind === 'department' ? 'Civil' : 'Civil';
+  store.mergeFields(c.id, {
+    case_number: c.case_number,
+    case_number_2: c.case_number,
+    division,
+    division_2: division,
+    date_filed: new Date(c.created_at).toLocaleDateString('en-US'),
+    ...extra,
+  });
+}
+
+/** Pulls answers out of every PDF a party just filed and remembers them. */
+async function harvestProfile(caseId, archived) {
+  let merged = 0;
+  for (const rec of archived ?? []) {
+    if (!rec.localPath) continue;
+    if (!/\.pdf$/i.test(rec.filename) && rec.content_type !== 'application/pdf') continue;
+    try {
+      const buf = await require('node:fs/promises').readFile(rec.localPath);
+      merged += store.mergeFields(caseId, await forms.readFilledFields(buf));
+    } catch (err) {
+      console.error('[forms] harvest failed:', err.message);
+    }
+  }
+  return merged;
 }
 
 /* ── logging ─────────────────────────────────────────────────── */
@@ -109,6 +154,14 @@ async function createCase(interaction, input) {
     const subId = store.createSubmission(c.id, 'intake', interaction.user.id, archived, {});
     store.resolveSubmission(subId, 'approved', null, interaction.user.id);
   }
+
+  seedProfile(c, {
+    plaintiff: interaction.user.username,
+    username: interaction.user.username,
+    contact_handle: interaction.user.username,
+    defendant: input.defendantRaw ?? '',
+  });
+  await harvestProfile(c.id, archived);
 
   const media = archived.length ? await buildMedia(archived, `${caseNumber}-intake`) : EMPTY_MEDIA;
   await showCaseMessage(channel, c, M.intakeMessage(c, media));
@@ -184,12 +237,103 @@ async function createDepartmentCase(interaction, draft) {
   }
 
   const fresh = store.getCaseById(c.id);
+  seedProfile(fresh, {
+    plaintiff: interaction.user.username,
+    username: interaction.user.username,
+    contact_handle: interaction.user.username,
+    agency: p.department,
+    defendant: p.department,
+  });
+  await harvestProfile(fresh.id, archived);
+  store.addMember(fresh.id, interaction.user.id, 'party', interaction.user.id);
+  if (p.attorneyId) {
+    store.addMember(fresh.id, p.attorneyId, 'attorney', interaction.user.id);
+    store.addClient(p.attorneyId, interaction.user.id, fresh.id, interaction.user.id);
+  }
+
   const media = archived.length ? await buildMedia(archived, `${caseNumber}-notice`) : EMPTY_MEDIA;
   await showCaseMessage(channel, fresh, M.departmentIntakeMessage(fresh, media));
 
   await log(
     interaction.client,
     `[FILED] \`${caseNumber}\` government claim by <@${interaction.user.id}> against **${p.department}** -> <#${channel.id}>`,
+  );
+
+  return { c: fresh, channel };
+}
+
+/** Creates the channel for a contested criminal charge. */
+async function createCriminalCase(interaction, input) {
+  const guild = interaction.guild;
+  const { caseNumber, year, seq } = fmt.allocateCaseNumber('criminal');
+
+  const overwrites = [
+    { id: guild.roles.everyone.id, deny: ['ViewChannel'], type: OverwriteType.Role },
+    { id: interaction.user.id, allow: PARTY_READ, deny: ['SendMessages'], type: OverwriteType.Member },
+    { id: config.roles.clerk, allow: STAFF, type: OverwriteType.Role },
+    { id: interaction.client.user.id, allow: BOT, type: OverwriteType.Member },
+  ];
+  if (config.roles.judge && config.roles.judge !== config.roles.clerk) {
+    overwrites.push({ id: config.roles.judge, allow: STAFF, type: OverwriteType.Role });
+  }
+
+  const channel = await guild.channels.create({
+    name: caseNumber.toLowerCase(),
+    type: ChannelType.GuildText,
+    parent: config.channels.criminalCategory || config.channels.civilCategory,
+    topic: `${caseNumber} · Accused: ${interaction.user.tag} · Charge: ${input.charge}`.slice(0, 1024),
+    permissionOverwrites: overwrites,
+    reason: `Criminal contest ${caseNumber} filed by ${interaction.user.tag}`,
+  });
+
+  const c = store.createCase({
+    case_number: caseNumber,
+    year,
+    seq,
+    kind: 'criminal',
+    guild_id: guild.id,
+    channel_id: channel.id,
+    plaintiff_id: interaction.user.id,
+    defendant_raw: 'The State of Florida',
+    department: null,
+    reason: input.reason,
+    links: input.links ?? null,
+  });
+
+  // The charge details ride in `employees` as JSON — the column is a generic
+  // per-kind detail bag, and criminal cases have no employee list.
+  store.updateCase(c.id, {
+    employees: JSON.stringify({
+      charge: input.charge,
+      agency: input.agency ?? '',
+      citation: input.citation ?? '',
+    }),
+  });
+
+  const archived = await archiveUploads(input.files ?? [], caseNumber, 'intake');
+  if (archived.length) {
+    const subId = store.createSubmission(c.id, 'intake', interaction.user.id, archived, {});
+    store.resolveSubmission(subId, 'approved', null, interaction.user.id);
+  }
+
+  const fresh = store.getCaseById(c.id);
+  seedProfile(fresh, {
+    defendant: interaction.user.username,
+    defendant_full_name: interaction.user.username,
+    username: interaction.user.username,
+    contact_handle: interaction.user.username,
+    arresting_agency: input.agency ?? '',
+    citation_number: input.citation ?? '',
+  });
+  await harvestProfile(fresh.id, archived);
+  store.addMember(fresh.id, interaction.user.id, 'party', interaction.user.id);
+
+  const media = archived.length ? await buildMedia(archived, `${caseNumber}-intake`) : EMPTY_MEDIA;
+  await showCaseMessage(channel, fresh, M.criminalIntakeMessage(fresh, media));
+
+  await log(
+    interaction.client,
+    `[FILED] \`${caseNumber}\` criminal contest by <@${interaction.user.id}> — ${input.charge} -> <#${channel.id}>`,
   );
 
   return { c: fresh, channel };
@@ -254,10 +398,13 @@ async function submitStage(interaction, c, stage, uploads, payload = {}) {
   const archived = await archiveUploads(uploads, c.case_number, stage);
   const submissionId = store.createSubmission(c.id, stage, interaction.user.id, archived, payload);
 
+  // Everything they typed into this PDF pre-fills the next one they download.
+  await harvestProfile(c.id, archived);
+
   const media = await buildMedia(archived, `${c.case_number}-${stage}`);
 
   const extra = [];
-  if (stage === 'service') {
+  if (STAGES[stage]?.picksCounterparty) {
     extra.push(
       `> Defendant username: \`${fmt.clean(payload.defendantUser, 100)}\`\n` +
         `> Defendant ID: \`${fmt.clean(payload.defendantId, 30)}\``,
@@ -344,16 +491,23 @@ async function advanceWithoutSubmission(interaction, c) {
 async function attachDefendant(interaction, c, defendantId) {
   const channel = interaction.channel;
 
+  // Win the transition BEFORE handing out access. Otherwise the clerk who
+  // loses a concurrent approval has already granted their pick write access
+  // and overwritten defendant_id.
+  // Civil: service -> answer. Criminal: notify -> response.
+  const next = nextStage(c.kind, c.stage);
+  if (!next || !store.advanceStage(c.id, c.stage, next)) return null;
+
   await channel.permissionOverwrites.edit(defendantId, grant(PARTY_WRITE), {
-    reason: `Defendant added to ${c.case_number}`,
+    reason: `Counterparty added to ${c.case_number}`,
   });
 
   store.updateCase(c.id, { defendant_id: defendantId });
-  if (!store.advanceStage(c.id, 'service', 'answer')) return null;
+  store.addMember(c.id, defendantId, 'party', interaction.user.id);
   const updated = store.getCaseById(c.id);
 
-  await showCaseMessage(channel, updated, M.stagePrompt('answer', updated));
-  await log(interaction.client, `[DEFENDANT] \`${c.case_number}\` <@${defendantId}> added to the case`);
+  await showCaseMessage(channel, updated, M.stagePrompt(next, updated));
+  await log(interaction.client, `[COUNTERPARTY] \`${c.case_number}\` <@${defendantId}> added to the case`);
   return updated;
 }
 
@@ -441,6 +595,7 @@ async function appointJudge(interaction, c, judgeId) {
     .catch(() => {});
 
   store.updateCase(c.id, { judge_id: judgeId });
+  store.addMember(c.id, judgeId, 'judge', interaction.user.id);
   const updated = store.getCaseById(c.id);
 
   if (updated.discovery_thread_id) {
@@ -477,7 +632,71 @@ async function closeCase(interaction, c) {
   return updated;
 }
 
-/* ── 9. Manual party add (/add) ──────────────────────────────── */
+/* ── 9. Lawyers ──────────────────────────────────────────────── */
+
+/**
+ * Clerk asks for counsel for a party: a notice in the case channel, then a
+ * broadcast with an Accept button in the attorney channel.
+ */
+async function requestLawyer(interaction, c, forUserId, details) {
+  const requestId = store.createRequest(c.id, forUserId, interaction.user.id, details);
+
+  // This is an extra message in the case channel on purpose: replacing the live
+  // step prompt would take away the Next Step button the party still needs.
+  const notice = await interaction.channel.send(L.lawyerRequestNotice(forUserId));
+  store.setRequestNotice(requestId, notice.id);
+
+  if (!config.channels.lawyerRequests) {
+    await log(interaction.client, `[LAWREQ] \`${c.case_number}\` no LAWYER_REQUEST_CHANNEL_ID set`);
+    return { requestId, broadcast: null };
+  }
+
+  const board = await interaction.client.channels.fetch(config.channels.lawyerRequests);
+  const sent = await board.send(L.lawyerRequestBroadcast(c, requestId, forUserId, details));
+  store.setRequestMessage(requestId, board.id, sent.id);
+
+  await log(
+    interaction.client,
+    `[LAWREQ] \`${c.case_number}\` counsel requested for <@${forUserId}> by <@${interaction.user.id}>`,
+  );
+  return { requestId, broadcast: sent };
+}
+
+/** An attorney takes the case: greys the button out and joins the channel. */
+async function acceptLawyerRequest(interaction, request, c) {
+  if (!store.acceptRequest(request.id, interaction.user.id)) return null;
+
+  const channel = await interaction.client.channels.fetch(c.channel_id);
+  await channel.permissionOverwrites
+    .edit(interaction.user.id, grant(PARTY_WRITE), { reason: `Counsel for ${c.case_number}` })
+    .catch(() => {});
+
+  if (c.discovery_thread_id) {
+    const thread = await channel.threads.fetch(c.discovery_thread_id).catch(() => null);
+    await thread?.members.add(interaction.user.id).catch(() => {});
+  }
+
+  store.addMember(c.id, interaction.user.id, 'attorney', request.requested_by);
+  store.addClient(interaction.user.id, request.for_user_id, c.id, request.requested_by);
+  store.seeLawyer(interaction.user.id);
+  if (!c.attorney_id) store.updateCase(c.id, { attorney_id: interaction.user.id });
+
+  // Update the notice already in the channel rather than adding another one.
+  if (request.notice_message_id) {
+    const notice = await channel.messages.fetch(request.notice_message_id).catch(() => null);
+    await notice
+      ?.edit(L.lawyerRequestNotice(request.for_user_id, interaction.user.id))
+      .catch(() => {});
+  }
+
+  await log(
+    interaction.client,
+    `[LAWREQ] \`${c.case_number}\` accepted by <@${interaction.user.id}> for <@${request.for_user_id}>`,
+  );
+  return store.getCaseById(c.id);
+}
+
+/* ── 10. Manual party add (/add) ─────────────────────────────── */
 
 async function addParty(interaction, c, userId) {
   await interaction.channel.permissionOverwrites.edit(userId, grant(PARTY_WRITE), {
@@ -488,13 +707,17 @@ async function addParty(interaction, c, userId) {
     const thread = await interaction.channel.threads.fetch(c.discovery_thread_id).catch(() => null);
     await thread?.members.add(userId).catch(() => {});
   }
+  store.addMember(c.id, userId, 'party', interaction.user.id);
   await log(interaction.client, `[ADDED] \`${c.case_number}\` <@${userId}> by <@${interaction.user.id}>`);
 }
 
 module.exports = {
   showCaseMessage,
+  seedProfile,
+  harvestProfile,
   createCase,
   createDepartmentCase,
+  createCriminalCase,
   advanceWithoutSubmission,
   closeCase,
   openCase,
@@ -505,6 +728,8 @@ module.exports = {
   attachDefendant,
   finalizeFiling,
   fileExhibits,
+  requestLawyer,
+  acceptLawyerRequest,
   appointJudge,
   addParty,
   log,

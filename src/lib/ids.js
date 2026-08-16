@@ -14,6 +14,7 @@ const IDS = {
   PANEL_FILE: 'p:file',
   PANEL_DEPT: 'p:dept',
   PANEL_ACTIVE: 'p:active',
+  PANEL_CRIMINAL: 'p:crim',
 
   // Intake review (clerk)
   CASE_OPEN: 'c:open',
@@ -30,6 +31,16 @@ const IDS = {
   GOV_NEXT: 'g:next',
   GOV_CANCEL: 'g:cancel',
 
+  // Lawyer reviews
+  REVIEW_PICK_AM: 'v:am',
+  REVIEW_PICK_NZ: 'v:nz',
+  REVIEW_PAGE: 'v:page',
+  REVIEW_LEAVE: 'v:leave',
+  REVIEW_BACK: 'v:back',
+
+  // Lawyer requests
+  LAWYER_ACCEPT: 'q:accept',
+
   // /close confirmation chain
   CLOSE_YES: 'x:yes',
   CLOSE_NO: 'x:no',
@@ -44,6 +55,8 @@ const IDS = {
   MODAL_ADD_JUDGE: 'm:addjudge',
   MODAL_GOV_FILES: 'm:gfiles',
   MODAL_GOV_DETAILS: 'm:gdetails',
+  MODAL_CRIMINAL: 'm:crim',
+  MODAL_REVIEW: 'm:review',
 };
 
 /** `r:ok` + 42 -> `r:ok:42` */
@@ -75,6 +88,11 @@ const FIELDS = {
   GOV_DESCRIPTION: 'gov_description',
   GOV_COMPENSATION: 'gov_compensation',
   GOV_ATTORNEY: 'gov_attorney',
+  CHARGE: 'charge',
+  AGENCY: 'agency',
+  CITATION: 'citation',
+  RATING: 'rating',
+  REVIEW_BODY: 'review_body',
 };
 
 module.exports = { IDS, FIELDS, withArg, parse };

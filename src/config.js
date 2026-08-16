@@ -41,11 +41,20 @@ const config = {
   roles: {
     clerk: req('CLERK_ROLE_ID'),
     judge: req('JUDGE_ROLE_ID'),
+    lawyer: opt('LAWYER_ROLE_ID'),
     panelManager: opt('PANEL_MANAGER_ROLE_ID'),
   },
 
+  // Server administrators normally bypass every role gate. Set this to `true`
+  // only if you want that back — the court decisions (open/deny a case,
+  // approve a filing) are deliberately clerk-role-only.
+  adminOverride: opt('ADMIN_OVERRIDE', 'false').toLowerCase() === 'true',
+
   channels: {
     civilCategory: req('CIVIL_CASE_CATEGORY_ID'),
+    criminalCategory: opt('CRIMINAL_CASE_CATEGORY_ID') || opt('CIVIL_CASE_CATEGORY_ID'),
+    lawyerRequests: opt('LAWYER_REQUEST_CHANNEL_ID'),
+    courtVoice: opt('COURT_VOICE_CHANNEL_ID'),
     support: opt('SUPPORT_CHANNEL_ID'),
     log: opt('LOG_CHANNEL_ID'),
     welcome: opt('WELCOME_CHANNEL_ID'),
@@ -56,6 +65,12 @@ const config = {
     footer: opt('FOOTER_URL', 'https://i.postimg.cc/5tc5CWtT/flgov-footer.webp'),
     seal: opt('SEAL_EMOJI', '<:unknown:1536074768187654245>'),
     welcomeEmoji: opt('WELCOME_EMOJI', '<:unknown:1526363469086064723>'),
+    // Request-a-lawyer / summon-to-court messages use their own banner.
+    requestBanner: opt('REQUEST_BANNER_URL', 'https://i.postimg.cc/B6C4GGzS/image-(2).webp'),
+    // The lawyer review panel has its own banner and heading emoji.
+    reviewBanner: opt('REVIEW_BANNER_URL', 'https://i.postimg.cc/SsGkppPX/image-(3).webp'),
+    reviewEmoji: opt('REVIEW_EMOJI', '<:unknown:1526363454104010902>'),
+    starEmoji: opt('STAR_EMOJI', '<:unknown:1538411573985411072>'),
   },
 
   prefix: opt('PREFIX', '$'),

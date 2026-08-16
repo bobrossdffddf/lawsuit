@@ -4,7 +4,7 @@ const { Client, GatewayIntentBits, Partials, Events, MessageFlags } = require('d
 
 const config = require('./config');
 require('./db'); // opens + migrates the database on boot
-const { handleButton } = require('./handlers/buttons');
+const { handleButton, handleSelect } = require('./handlers/buttons');
 const { handleModal } = require('./handlers/modals');
 const { handleCommand } = require('./handlers/commands');
 const { handleMessage, handleMemberJoin } = require('./handlers/messages');
@@ -42,6 +42,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) return await handleCommand(interaction);
     if (interaction.isButton()) return await handleButton(interaction);
+    if (interaction.isStringSelectMenu()) return await handleSelect(interaction);
     if (interaction.isModalSubmit()) return await handleModal(interaction);
   } catch (err) {
     console.error('[interaction] unhandled error:', err);

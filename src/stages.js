@@ -43,6 +43,7 @@ const STAGES = {
   service: {
     pill: '2/3',
     actor: 'plaintiff',
+    picksCounterparty: true,
     denyTitle: 'Proof of Service Denied',
     reviewTitle: 'Proof of Service - Waiting on clerk',
     modalTitle: 'Civil Lawsuit 2/3',
@@ -54,6 +55,41 @@ const STAGES = {
     denyTitle: 'Answer Denied',
     reviewTitle: 'Step 3 - Waiting on clerk',
     modalTitle: 'Civil Lawsuit 3/3',
+  },
+
+  /* ── criminal ──────────────────────────────────────────── */
+
+  contest: {
+    pill: '1/3',
+    actor: 'plaintiff',
+    denyTitle: 'Step One Denied',
+    reviewTitle: 'Step 1 - Waiting on clerk',
+    modalTitle: 'Criminal Contest 1/3',
+  },
+
+  motion: {
+    pill: '2/3',
+    actor: 'plaintiff',
+    denyTitle: 'Step Two Denied',
+    reviewTitle: 'Step 2 - Waiting on clerk',
+    modalTitle: 'Criminal Contest 2/3',
+  },
+
+  notify: {
+    pill: '2/3',
+    actor: 'plaintiff',
+    picksCounterparty: true,
+    denyTitle: 'Notice to the State Denied',
+    reviewTitle: 'Notice to the State - Waiting on clerk',
+    modalTitle: 'Criminal Contest 2/3',
+  },
+
+  response: {
+    pill: '3/3',
+    actor: 'defendant',
+    denyTitle: 'State Response Denied',
+    reviewTitle: 'Step 3 - Waiting on clerk',
+    modalTitle: 'Criminal Contest 3/3',
   },
 
   /* ── department ────────────────────────────────────────── */
@@ -71,7 +107,17 @@ const STAGES = {
 const PIPELINES = {
   person: ['intake', 'complaint', 'summons', 'service', 'answer', 'filed'],
   department: ['intake', 'notice', 'filed'],
+  criminal: ['intake', 'contest', 'motion', 'notify', 'response', 'filed'],
 };
+
+/** Human label for the two sides, which differ by kind of case. */
+const PARTY_LABELS = {
+  person: { plaintiff: 'Plaintiff', defendant: 'Defendant' },
+  department: { plaintiff: 'Claimant', defendant: 'Agency' },
+  criminal: { plaintiff: 'Accused', defendant: 'State' },
+};
+
+const partyLabel = (kind, side) => (PARTY_LABELS[kind] ?? PARTY_LABELS.person)[side];
 
 const pipelineFor = (kind) => PIPELINES[kind] ?? PIPELINES.person;
 
@@ -86,4 +132,4 @@ function nextStage(kind, stage) {
 /** The first stage after intake — where a case lands when a clerk opens it. */
 const openingStage = (kind) => pipelineFor(kind)[1];
 
-module.exports = { STAGES, PIPELINES, pipelineFor, nextStage, openingStage };
+module.exports = { STAGES, PIPELINES, PARTY_LABELS, partyLabel, pipelineFor, nextStage, openingStage };
