@@ -32,6 +32,21 @@ client.once(Events.ClientReady, async (c) => {
     for (const m of missing) console.error(`          assets/forms/${m}`);
   }
 
+  // A stale .env silently switches features off. Say so on boot.
+  const off = [];
+  if (!config.roles.lawyer) off.push('LAWYER_ROLE_ID — /review lists nobody, /lawreq pings nobody');
+  if (!config.channels.lawyerRequests) off.push('LAWYER_REQUEST_CHANNEL_ID — /lawreq will not broadcast');
+  if (!config.channels.courtVoice) off.push('COURT_VOICE_CHANNEL_ID — /request omits the channel link');
+  if (!config.channels.welcome) off.push('WELCOME_CHANNEL_ID — no welcome message on join');
+  if (!config.channels.support) off.push('SUPPORT_CHANNEL_ID — "get support in #..." has no link');
+  if (off.length) {
+    console.warn('[ready] these features are OFF because their .env keys are unset:');
+    for (const line of off) console.warn(`          ${line}`);
+  }
+  console.log(
+    `[ready] clerk-only decisions: ${config.adminOverride ? 'NO (ADMIN_OVERRIDE=true)' : 'yes'}`,
+  );
+
   const pruned = store.pruneDrafts();
   if (pruned) console.log(`[ready] cleared ${pruned} abandoned government-claim draft(s)`);
 
