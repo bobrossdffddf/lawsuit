@@ -185,6 +185,35 @@ const nextSeq = db.transaction((key) => {
   return db.prepare('SELECT value FROM counters WHERE key = ?').get(key).value;
 });
 
+const seqStmts = {
+  ensure: db.prepare('INSERT INTO counters (key, value) VALUES (?, 0) ON CONFLICT(key) DO NOTHING'),
+  read: db.prepare('SELECT value FROM counters WHERE key = ?'),
+  write: db.prepare('UPDATE counters SET value = ? WHERE key = ?'),
+  highestUsed: db.prepare(
+    'SELECT COALESCE(MAX(seq), 0) AS n FROM cases WHERE year = ? AND case_number LIKE ?',
+  ),
+};
+
+/**
+ * Next sequence number on a docket, e.g. ('CC', '26') -> 42.
+ *
+ * Deliberately takes the MAX of the stored counter and the highest number
+ * actually present in `cases`. A counter can be reset, renamed or restored
+ * from an older backup; the case table is the real record. This makes the
+ * allocator self-healing instead of handing out a duplicate.
+ */
+const nextCaseSeq = db.transaction((code, year) => {
+  const key = `case:${code}:${year}`;
+  seqStmts.ensure.run(key);
+
+  const counter = seqStmts.read.get(key)?.value ?? 0;
+  const used = seqStmts.highestUsed.get(year, `${year}-${code}-%`).n;
+
+  const next = Math.max(counter, used) + 1;
+  seqStmts.write.run(next, key);
+  return next;
+});
+
 /* ── cases ────────────────────────────────────────────────── */
 
 const stmts = {
@@ -265,6 +294,12 @@ const stmts = {
     VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
   `),
   membersOf: db.prepare('SELECT * FROM case_members WHERE case_id = ?'),
+  memberRoles: db.prepare('SELECT role FROM case_members WHERE case_id = ? AND user_id = ?'),
+  dropMember: db.prepare('DELETE FROM case_members WHERE case_id = ? AND user_id = ?'),
+  resolvePending: db.prepare(`
+    UPDATE submissions SET status = 'approved', resolved_at = ?, resolved_by = ?
+    WHERE case_id = ? AND stage = ? AND status = 'pending'
+  `),
   caseCountFor: db.prepare(
     'SELECT COUNT(DISTINCT case_id) AS n FROM case_members WHERE user_id = ? AND role = ?',
   ),
@@ -323,6 +358,7 @@ module.exports = {
   db,
   now,
   nextSeq,
+  nextCaseSeq,
   updateCase,
 
   createCase(row) {
@@ -442,6 +478,11 @@ module.exports = {
   addMember: (caseId, userId, role = 'party', addedBy = null) =>
     stmts.addMember.run(caseId, userId, role, addedBy, now()),
   getMembers: (caseId) => stmts.membersOf.all(caseId),
+  getMemberRoles: (caseId, userId) => stmts.memberRoles.all(caseId, userId),
+  removeMember: (caseId, userId) => stmts.dropMember.run(caseId, userId),
+  /** Closes out anything still waiting on a clerk for a stage being skipped. */
+  resolvePendingForStage: (caseId, stage, byId) =>
+    stmts.resolvePending.run(now(), byId, caseId, stage).changes,
   countCasesFor: (userId, role = 'attorney') => stmts.caseCountFor.get(userId, role)?.n ?? 0,
 
   /* ── the bar ──────────────────────────────────────────── */

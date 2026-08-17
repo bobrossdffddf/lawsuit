@@ -215,7 +215,7 @@ async function handleModal(interaction) {
       if (!files.length) return interaction.editReply('You need to attach at least one file.');
 
       const payload = {};
-      if (stage === 'service') {
+      if (STAGES[stage]?.collectsCounterparty) {
         payload.defendantUser = F.textOf(interaction, FIELDS.DEFENDANT_USER);
         payload.defendantId = F.textOf(interaction, FIELDS.DEFENDANT_ID).replace(/\D/g, '');
       }
@@ -268,7 +268,7 @@ async function handleModal(interaction) {
         );
       }
       if (defendantId === c.plaintiff_id) {
-        return interaction.editReply('The defendant cannot be the same person as the plaintiff.');
+        return interaction.editReply('The two sides cannot be the same person.');
       }
 
       if (!STAGES[c.stage]?.picksCounterparty) {

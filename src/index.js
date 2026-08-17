@@ -10,6 +10,7 @@ const { handleCommand } = require('./handlers/commands');
 const { handleMessage, handleMemberJoin } = require('./handlers/messages');
 const { hasPoppler } = require('./lib/pdf');
 const store = require('./db');
+const bar = require('./services/barService');
 
 const client = new Client({
   intents: [
@@ -47,8 +48,41 @@ client.once(Events.ClientReady, async (c) => {
     `[ready] clerk-only decisions: ${config.adminOverride ? 'NO (ADMIN_OVERRIDE=true)' : 'yes'}`,
   );
 
+  // Any channel that looks like a case but has no row is a leftover from a
+  // failed filing. Name them so they can be deleted rather than lingering.
+  try {
+    const guild = await c.guilds.fetch(config.guildId);
+    const channels = await guild.channels.fetch();
+    const orphans = [...channels.values()].filter(
+      (ch) =>
+        ch &&
+        /^\d{2}-(cc|cr)-\d{6}$/i.test(ch.name) &&
+        !store.getCaseByChannel(ch.id),
+    );
+    if (orphans.length) {
+      console.warn(
+        `[ready] ${orphans.length} case channel(s) have no docket entry — safe to delete: ` +
+          orphans.map((ch) => `#${ch.name}`).join(', '),
+      );
+    }
+  } catch (err) {
+    console.warn('[ready] could not scan for orphaned case channels:', err.message);
+  }
+
   const pruned = store.pruneDrafts();
   if (pruned) console.log(`[ready] cleared ${pruned} abandoned government-claim draft(s)`);
+
+  // One member fetch at boot fills the cache, so /review never has to make a
+  // rate-limited gateway request on demand.
+  if (config.roles.lawyer) {
+    try {
+      const guild = await c.guilds.fetch(config.guildId);
+      await guild.members.fetch();
+      console.log(`[ready] bar roll cached: ${(await bar.roll(guild)).length} attorney(s)`);
+    } catch (err) {
+      console.warn('[ready] could not warm the member cache:', err.message);
+    }
+  }
 
   c.user.setPresence({ activities: [{ name: 'the docket' }], status: 'online' });
 });
@@ -75,6 +109,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.MessageCreate, (message) => {
   handleMessage(message).catch((err) => console.error('[message] error:', err));
+});
+
+client.on(Events.GuildMemberUpdate, (before, after) => {
+  const had = before.roles.cache.has(config.roles.lawyer);
+  const has = after.roles.cache.has(config.roles.lawyer);
+  if (had !== has) {
+    bar.invalidateRoll();
+    if (has) store.seeLawyer(after.id, Date.now());
+  }
 });
 
 client.on(Events.GuildMemberAdd, (member) => {

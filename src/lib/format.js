@@ -20,7 +20,7 @@ const DOCKET_CODE = { person: 'CC', department: 'CC', criminal: 'CR' };
 function allocateCaseNumber(kind = 'person') {
   const year = caseYear();
   const code = DOCKET_CODE[kind] ?? 'CC';
-  const seq = store.nextSeq(`case:${code}:${year}`);
+  const seq = store.nextCaseSeq(code, year);
   return { caseNumber: `${year}-${code}-${String(seq).padStart(6, '0')}`, year, seq };
 }
 

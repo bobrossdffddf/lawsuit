@@ -114,6 +114,63 @@ async function handleCommand(interaction) {
       );
     }
 
+    /* ── skipping a step ──────────────────────────────────── */
+
+    case 'skip': {
+      if (!perms.isClerk(interaction.member)) {
+        return interaction.reply({ content: 'Only clerks may skip a step.', flags: EPHEMERAL });
+      }
+      const c = store.getCaseByChannel(interaction.channelId);
+      if (!c) return interaction.reply({ content: 'Run this inside a case channel.', flags: EPHEMERAL });
+      if (c.status === 'closed') {
+        return interaction.reply({ content: 'This case is closed.', flags: EPHEMERAL });
+      }
+      if (c.stage === 'intake') {
+        return interaction.reply({
+          content: 'Open or deny the case first — there is no step to skip yet.',
+          flags: EPHEMERAL,
+        });
+      }
+      if (c.stage === 'filed') {
+        return interaction.reply({ content: 'This case is already filed.', flags: EPHEMERAL });
+      }
+
+      await interaction.deferReply({ flags: EPHEMERAL });
+      const moved = await cases.skipStage(interaction, c);
+      return interaction.editReply(
+        moved
+          ? `Skipped **${M.STAGE_LABEL[moved.from] ?? moved.from}** — the case is now at ` +
+              `**${M.STAGE_LABEL[moved.to] ?? moved.to}**.`
+          : 'That step is no longer current.',
+      );
+    }
+
+    /* ── removing someone from a case ─────────────────────── */
+
+    case 'remove': {
+      if (!perms.isClerk(interaction.member)) {
+        return interaction.reply({ content: 'Only clerks may remove someone.', flags: EPHEMERAL });
+      }
+      const c = store.getCaseByChannel(interaction.channelId);
+      if (!c) return interaction.reply({ content: 'Run this inside a case channel.', flags: EPHEMERAL });
+
+      const user = interaction.options.getUser('user', true);
+      if (user.id === c.plaintiff_id) {
+        return interaction.reply({
+          content:
+            'You cannot remove the person who filed the case — close it with `/close` instead.',
+          flags: EPHEMERAL,
+        });
+      }
+
+      await interaction.deferReply({ flags: EPHEMERAL });
+      const { cleared } = await cases.removeParty(interaction, c, user.id);
+      return interaction.editReply(
+        `<@${user.id}> has been removed from \`${c.case_number}\`` +
+          (cleared.length ? ` and is no longer the ${cleared.join(' or ')}.` : '.'),
+      );
+    }
+
     /* ── summoning someone to the courtroom ───────────────── */
 
     case 'request': {

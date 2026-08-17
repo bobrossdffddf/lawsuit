@@ -9,7 +9,7 @@ const { archiveUploads, buildMedia, EMPTY_MEDIA } = require('../lib/media');
 const forms = require('../lib/forms');
 const M = require('../ui/messages');
 const L = require('../ui/lawyers');
-const { STAGES, nextStage, openingStage } = require('../stages');
+const { STAGES, partyLabel, nextStage, openingStage } = require('../stages');
 
 /* ── permission sets ─────────────────────────────────────────────
    Written as permission *names* because that is what both
@@ -32,6 +32,24 @@ const BOT = [...STAFF, 'ManageChannels', 'ManageThreads'];
 
 /** `['ViewChannel', ...]` -> `{ ViewChannel: true, ... }` */
 const grant = (names, value = true) => Object.fromEntries(names.map((n) => [n, value]));
+
+/**
+ * Writes the case row, deleting the freshly-made channel if that fails.
+ *
+ * The channel has to exist before the row (the row stores its id), so any
+ * error in between would otherwise leave an empty, untracked channel sitting
+ * in the category forever — which is exactly what the duplicate case-number
+ * bug did three times.
+ */
+function insertCase(channel, row) {
+  try {
+    return store.createCase(row);
+  } catch (err) {
+    console.error(`[case] insert failed for ${row.case_number}, removing the channel:`, err.message);
+    channel.delete(`Filing failed: ${err.message}`).catch(() => {});
+    throw err;
+  }
+}
 
 /* ── the single live message ─────────────────────────────────────
    A case channel holds exactly ONE bot message at a time. Each step
@@ -133,7 +151,7 @@ async function createCase(interaction, input) {
     reason: `Civil case ${caseNumber} filed by ${interaction.user.tag}`,
   });
 
-  const c = store.createCase({
+  const c = insertCase(channel, {
     case_number: caseNumber,
     year,
     seq,
@@ -208,7 +226,7 @@ async function createDepartmentCase(interaction, draft) {
     reason: `Government claim ${caseNumber} filed by ${interaction.user.tag}`,
   });
 
-  const c = store.createCase({
+  const c = insertCase(channel, {
     case_number: caseNumber,
     year,
     seq,
@@ -286,7 +304,7 @@ async function createCriminalCase(interaction, input) {
     reason: `Criminal contest ${caseNumber} filed by ${interaction.user.tag}`,
   });
 
-  const c = store.createCase({
+  const c = insertCase(channel, {
     case_number: caseNumber,
     year,
     seq,
@@ -403,12 +421,14 @@ async function submitStage(interaction, c, stage, uploads, payload = {}) {
 
   const media = await buildMedia(archived, `${c.case_number}-${stage}`);
 
+  // Only civil service asks the filer who the other side is; everything else
+  // would print an empty "Defendant username: ``" line.
   const extra = [];
-  if (STAGES[stage]?.picksCounterparty) {
-    extra.push(
-      `> Defendant username: \`${fmt.clean(payload.defendantUser, 100)}\`\n` +
-        `> Defendant ID: \`${fmt.clean(payload.defendantId, 30)}\``,
-    );
+  if (STAGES[stage]?.collectsCounterparty && (payload.defendantUser || payload.defendantId)) {
+    const lines = [];
+    if (payload.defendantUser) lines.push(`> Defendant username: \`${fmt.clean(payload.defendantUser, 100)}\``);
+    if (payload.defendantId) lines.push(`> Defendant ID: \`${fmt.clean(payload.defendantId, 30)}\``);
+    extra.push(lines.join('\n'));
   }
 
   const sent = await showCaseMessage(
@@ -696,7 +716,73 @@ async function acceptLawyerRequest(interaction, request, c) {
   return store.getCaseById(c.id);
 }
 
-/* ── 10. Manual party add (/add) ─────────────────────────────── */
+/* ── 10. Skipping a step (/skip) ─────────────────────────────── */
+
+/**
+ * Moves a case to the next stage without a filing. Any pending submission for
+ * the stage being skipped is marked approved so it cannot be acted on later.
+ */
+async function skipStage(interaction, c) {
+  const next = nextStage(c.kind, c.stage);
+  if (!next) return null;
+  if (!store.advanceStage(c.id, c.stage, next)) return null;
+
+  store.resolvePendingForStage(c.id, c.stage, interaction.user.id);
+
+  const updated = store.getCaseById(c.id);
+  if (next === 'filed') await finalizeFiling(interaction, updated);
+  else await showCaseMessage(interaction.channel, updated, M.stagePrompt(next, updated));
+
+  await log(
+    interaction.client,
+    `[SKIP] \`${c.case_number}\` ${c.stage} -> ${next} skipped by <@${interaction.user.id}>`,
+  );
+  return { from: c.stage, to: next, c: store.getCaseById(c.id) };
+}
+
+/* ── 11. Removing someone (/remove) ──────────────────────────── */
+
+/**
+ * Takes a user off a case: channel access, discovery thread, and whatever role
+ * they held on the docket. Parties are cleared from the case row too, so the
+ * step machinery stops pointing at them.
+ */
+async function removeParty(interaction, c, userId) {
+  const channel = interaction.channel;
+  const roles = store.getMemberRoles(c.id, userId);
+
+  await channel.permissionOverwrites.delete(userId, `Removed from ${c.case_number}`).catch(() => {});
+
+  if (c.discovery_thread_id) {
+    const thread = await channel.threads.fetch(c.discovery_thread_id).catch(() => null);
+    await thread?.members.remove(userId).catch(() => {});
+  }
+
+  const cleared = [];
+  if (c.judge_id === userId) {
+    store.updateCase(c.id, { judge_id: null });
+    cleared.push('judge');
+  }
+  if (c.attorney_id === userId) {
+    store.updateCase(c.id, { attorney_id: null });
+    cleared.push('attorney of record');
+  }
+  if (c.defendant_id === userId) {
+    store.updateCase(c.id, { defendant_id: null });
+    cleared.push(partyLabel(c.kind, 'counterparty').toLowerCase());
+  }
+
+  store.removeMember(c.id, userId);
+
+  await log(
+    interaction.client,
+    `[REMOVED] \`${c.case_number}\` <@${userId}> by <@${interaction.user.id}>` +
+      (cleared.length ? ` (was ${cleared.join(', ')})` : ''),
+  );
+  return { cleared, roles: roles.map((r) => r.role) };
+}
+
+/* ── 12. Manual party add (/add) ─────────────────────────────── */
 
 async function addParty(interaction, c, userId) {
   await interaction.channel.permissionOverwrites.edit(userId, grant(PARTY_WRITE), {
@@ -730,6 +816,8 @@ module.exports = {
   fileExhibits,
   requestLawyer,
   acceptLawyerRequest,
+  skipStage,
+  removeParty,
   appointJudge,
   addParty,
   log,

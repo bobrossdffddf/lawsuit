@@ -250,7 +250,7 @@ const crimCase = {
   ...fakeCase,
   kind: 'criminal',
   case_number: '26-CR-000004',
-  stage: 'contest',
+  stage: 'appearance',
   employees: JSON.stringify({ charge: 'Grand theft auto', agency: 'FHP', citation: 'CW-4417Q' }),
 };
 checkMessage('criminalIntakeMessage', M.criminalIntakeMessage(crimCase, fakeMedia));
@@ -417,7 +417,7 @@ checkMentions(
 console.log('\nForm carry-over wiring');
 // Regression: the pre-fill only happens when a payload declares formKeys.
 // Without this every party gets a blank PDF and the profile is dead weight.
-for (const stage of ['complaint', 'summons', 'answer', 'contest', 'motion', 'notify', 'response']) {
+for (const stage of ['complaint', 'summons', 'answer', 'appearance', 'motions', 'prosecution']) {
   const payload = M.stagePrompt(stage, fakeCase);
   const expected = M.STAGE_FORMS[stage].filter((k) => config.forms[k]);
   if (!expected.length) continue;
@@ -432,7 +432,7 @@ console.log('\nCounterparty stages');
 // Regression: `picksCounterparty` must actually drive the modals, or the
 // criminal pipeline dead-ends with no prosecutor attached.
 for (const [stage, meta] of Object.entries(STAGES)) {
-  if (!meta.picksCounterparty) continue;
+  if (!meta.collectsCounterparty) continue;
   const modal = modals.stepModal(stage);
   const ids = modal.components.map((n) => n.component?.custom_id).filter(Boolean);
   if (ids.includes('defendant_user') && ids.includes('defendant_id')) {
@@ -440,7 +440,8 @@ for (const [stage, meta] of Object.entries(STAGES)) {
   } else {
     fail(`stepModal:${stage}`, `collects ${ids.join(', ')} — cannot identify the other side`);
   }
-  checkModal(`serviceApproveModal:${stage}`, modals.serviceApproveModal(1, null, stage));
+  checkModal(`serviceApproveModal:${stage}`, modals.serviceApproveModal(1, null, 'person'));
+  checkModal(`serviceApproveModal:${stage}:criminal`, modals.serviceApproveModal(1, null, 'criminal'));
 }
 
 console.log('\nWelcome message');

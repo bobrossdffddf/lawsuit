@@ -68,18 +68,21 @@ Filing creates `26-CR-000001` on its own docket, in `CRIMINAL_CASE_CATEGORY_ID`.
 The pipeline mirrors the civil one exactly:
 
 ```
-intake   clerk presses Open Case or Deny Case
+intake      clerk presses Open Case or Deny Case
    ↓
-contest  accused files CR-08 (counsel) or CR-09 (appointed counsel)   [1/3]
+appearance  defendant files CR-08 (counsel) or CR-09 (appointed)   [1/3]
    ↓
-motion   accused files CR-12 (suppress) or GN-01 (general motion)     [2/3]
+motions     defendant files CR-12 (suppress) or GN-01 (general)    [2/3]
+   ↓        → clerk approves AND assigns the prosecutor, who joins
+prosecution prosecution files CR-03 Information                    [3/3]
    ↓
-notify   accused proves they served the State + names the prosecutor  [2/3]
-   ↓     → clerk approves via a user picker, prosecutor joins the case
-response prosecutor files CR-03 Information                           [3/3]
-   ↓
-filed    discovery thread opens
+filed       discovery thread opens
 ```
+
+The person contesting is the **defendant** — they are never asked who is
+prosecuting them, because assigning the State is the court's job. Every label
+comes from `PARTY_LABELS` in `src/stages.js`: a civil filer is the Plaintiff, a
+government claimant is the Claimant, a criminal filer is the Defendant.
 
 ### Forms fill themselves in
 
@@ -161,6 +164,8 @@ Any file dropped in the discovery thread is replied to with a
 | `/review` | anyone | Attorney directory, profiles and reviews |
 | `/lawyeradd` | clerks | Registers a user as an attorney's client, so they can review them |
 | `/lawreq user:` | clerks | Requests counsel for a party and broadcasts it to the bar |
+| `/skip` | clerks | Skips the current step; any pending filing on it is closed out |
+| `/remove user:` | clerks | Removes someone from the case and clears their role on it |
 | `/request user:` | staff & attorneys | DMs someone asking them to join the court voice channel |
 
 ---

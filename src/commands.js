@@ -45,6 +45,17 @@ const definitions = [
     .setDMPermission(false),
 
   new SlashCommandBuilder()
+    .setName('skip')
+    .setDescription('Skip the current step and move the case forward (clerks only)')
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
+    .setName('remove')
+    .setDescription('Remove a user from this case and clear their role on it (clerks only)')
+    .addUserOption((o) => o.setName('user').setDescription('Who to remove').setRequired(true))
+    .setDMPermission(false),
+
+  new SlashCommandBuilder()
     .setName('request')
     .setDescription('DM someone asking them to join the courtroom')
     .addUserOption((o) => o.setName('user').setDescription('Who to summon').setRequired(true))

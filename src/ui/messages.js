@@ -2,7 +2,7 @@
 
 const config = require('../config');
 const { IDS, withArg } = require('../lib/ids');
-const { STAGES } = require('../stages');
+const { STAGES, partyLabel } = require('../stages');
 const fmt = require('../lib/format');
 const U = require('./common');
 
@@ -306,13 +306,13 @@ function stageBody(stage, c) {
         U.formRef('CV03'),
       ];
 
-    /* ── criminal contest ────────────────────────────────── */
+    /* ── criminal ────────────────────────────────────────── */
 
-    case 'contest':
+    case 'appearance':
       return [
         U.text(
-          '\nTo start you must tell the court who is representing you. Fill out **one** of these ' +
-            'two forms.\n\nUse this one if you have hired an attorney, or are appearing pro se ' +
+          '\nFirst the court needs to know who is representing you. Fill out **one** of these two ' +
+            'forms.\n\nUse this one if you have hired an attorney, or are appearing pro se ' +
             '(representing yourself) ',
         ),
         U.formRef('CR08'),
@@ -320,10 +320,10 @@ function stageBody(stage, c) {
         U.formRef('CR09'),
       ];
 
-    case 'motion':
+    case 'motions':
       return [
         U.text(
-          '\nNow file the motion that says what you are actually contesting. If you are ' +
+          '\nNow file the motion that says what you are actually challenging. If you are ' +
             'challenging how evidence was obtained — a stop, a search, a statement — use the ' +
             'motion to suppress. For anything else use the general motion.\nㅤ\n',
         ),
@@ -332,25 +332,14 @@ function stageBody(stage, c) {
         U.formRef('GN01'),
       ];
 
-    case 'notify':
+    case 'prosecution':
       return [
         U.text(
-          '\nYou must now serve your filings on the State and prove you did it. Send your ' +
-            'completed forms to the arresting agency or the prosecutor, then get a photo or video ' +
-            'of you doing so. Fill out the certificate of service below and upload it with your ' +
-            'proof.\nㅤ\n',
-        ),
-        U.formRef('GN05'),
-      ];
-
-    case 'response':
-      return [
-        U.text(
-          `\nHello <@${c.defendant_id}>. You have been added to this ticket because you are ` +
-            'prosecuting this matter. The accused has contested the charge and their filings are ' +
-            'on the record above.\nㅤ\n' +
-            'You must now file the Information — the formal charging document that states exactly ' +
-            'what the State alleges and under which statute. ',
+          `\nHello <@${c.defendant_id}>. You are prosecuting this matter on behalf of the State. ` +
+            'The defendant has entered an appearance and filed their motions — everything is on the ' +
+            'record above.\nㅤ\n' +
+            'You must now file the Information: the formal charging document stating exactly what ' +
+            'the State alleges and under which statute. ',
         ),
         U.formRef('CR03'),
       ];
@@ -367,10 +356,9 @@ const STAGE_FORMS = {
   service: ['CV02'],
   answer: ['CV02', 'CV03'],
   notice: [],
-  contest: ['CR08', 'CR09'],
-  motion: ['CR12', 'GN01'],
-  notify: ['GN05'],
-  response: ['CR03'],
+  appearance: ['CR08', 'CR09'],
+  motions: ['CR12', 'GN01'],
+  prosecution: ['CR03'],
 };
 
 /** Header line shown above the body when the stage is entered normally. */
@@ -385,16 +373,13 @@ const STAGE_HEADERS = {
     `${U.title('Step Two Completed!')}\n` +
     `Step 2 has been completed and you have been approved to move to the next stage. ${AI_NOTE}`,
   answer: () => `${U.title('Lawsuit Pending...')}`,
-  contest: (c) =>
-    `${U.title('Charge Contested')}\n` +
-    `Your contest has been accepted <@${c.plaintiff_id}> and a case has been opened. ${AI_NOTE}`,
-  motion: () =>
+  appearance: (c) =>
+    `${U.title('Case Opened')}\n` +
+    `Your case has been opened <@${c.plaintiff_id}>. ${AI_NOTE}`,
+  motions: () =>
     `${U.title('Step One Completed!')}\n` +
     `Step 1 has been completed and you have been approved to move to the next stage. ${AI_NOTE}`,
-  notify: () =>
-    `${U.title('Step Two Completed!')}\n` +
-    `Step 2 has been completed and you have been approved to move to the next stage. ${AI_NOTE}`,
-  response: () => `${U.title('Awaiting the State...')}`,
+  prosecution: () => `${U.title('Awaiting the Prosecution...')}`,
   notice: (c) =>
     `${U.title('Suing a Department')}\n` +
     `Congrats <@${c.plaintiff_id}> your claim has been approved and your case has been opened. ` +
@@ -431,14 +416,10 @@ function stagePrompt(stage, c, opts = {}) {
 
   if (stage === 'notice') {
     inner.push(U.text('-# Please wait until the department responds to your notice of claim.'));
-  } else if (stage === 'answer') {
-    inner.push(U.text('-# Only the defendant is able to do this part.'));
-  } else if (stage === 'response') {
-    inner.push(U.text('-# Only the prosecutor is able to do this part.'));
-  } else if (stage === 'contest' || stage === 'motion' || stage === 'notify') {
-    inner.push(U.text('-# Only the accused is able to do this part.'));
   } else {
-    inner.push(U.text('-# Only the plaintiff is able to do this part.'));
+    // "the Defendant" in a criminal case is the person who filed; "the
+    // Prosecution" is the other side. Always ask the case what to call them.
+    inner.push(U.text(`-# Only the ${partyLabel(c.kind, meta.actor)} is able to do this part.`));
   }
 
   const mentionUsers = [c.plaintiff_id, c.defendant_id, opts.deniedBy];
@@ -459,6 +440,8 @@ function stagePrompt(stage, c, opts = {}) {
    ══════════════════════════════════════════════════════════════ */
 
 function reviewMessage(stage, c, submissionId, media, submitterId, extraLines = []) {
+  // extraLines arrive already filtered; an empty "Defendant username: ``" line
+  // is worse than no line at all.
   const meta = STAGES[stage];
   const inner = [
     U.text(`${U.title(meta.reviewTitle)}\n`),
@@ -608,10 +591,7 @@ const STAGE_LABEL = {
   service: 'Service of process',
   answer: 'Awaiting answer',
   notice: 'Notice of claim served',
-  contest: 'Notice of appearance',
   motion: 'Motion filed',
-  notify: 'Notice to the State',
-  response: 'Awaiting the State',
   filed: 'Filed — discovery open',
 };
 

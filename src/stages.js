@@ -16,8 +16,17 @@
  *   notice     plaintiff serves CV-04 on the agency and waits for a response
  *   filed      docketed; discovery thread is open
  *
- * `actor` is who may press "Next Step" at that stage.
- * `noSubmission` stages advance on the button press alone — no upload modal.
+ * `actor` is who may press "Next Step": `filer` is whoever opened the case,
+ * `counterparty` is the other side. What those are CALLED depends on the kind
+ * of case — see PARTY_LABELS. Never hardcode "plaintiff" or "defendant" in
+ * copy; a criminal filer is the defendant, and calling them the plaintiff is
+ * what made the criminal flow read as nonsense.
+ *
+ * `noSubmission`       advances on the button press alone, no upload modal.
+ * `collectsCounterparty` the filer supplies the other side's handle in their
+ *                      own modal — only true where the filer genuinely serves
+ *                      them (civil service of process).
+ * `picksCounterparty`  the clerk identifies the other side when they approve.
  */
 const STAGES = {
   intake: {},
@@ -26,7 +35,7 @@ const STAGES = {
 
   complaint: {
     pill: '1/3',
-    actor: 'plaintiff',
+    actor: 'filer',
     denyTitle: 'Step One Denied',
     reviewTitle: 'Step 1 - Waiting on clerk',
     modalTitle: 'Civil Lawsuit 1/3',
@@ -34,7 +43,7 @@ const STAGES = {
 
   summons: {
     pill: '2/3',
-    actor: 'plaintiff',
+    actor: 'filer',
     denyTitle: 'Step Two Denied',
     reviewTitle: 'Step 2 - Waiting on clerk',
     modalTitle: 'Civil Lawsuit 2/3',
@@ -42,7 +51,8 @@ const STAGES = {
 
   service: {
     pill: '2/3',
-    actor: 'plaintiff',
+    actor: 'filer',
+    collectsCounterparty: true,
     picksCounterparty: true,
     denyTitle: 'Proof of Service Denied',
     reviewTitle: 'Proof of Service - Waiting on clerk',
@@ -51,51 +61,48 @@ const STAGES = {
 
   answer: {
     pill: '3/3',
-    actor: 'defendant',
+    actor: 'counterparty',
     denyTitle: 'Answer Denied',
     reviewTitle: 'Step 3 - Waiting on clerk',
     modalTitle: 'Civil Lawsuit 3/3',
   },
 
-  /* ── criminal ──────────────────────────────────────────── */
+  /* ── criminal ────────────────────────────────────────────
+     The accused is the DEFENDANT. They never serve or name the
+     prosecution — the court assigns it. So nothing here asks the
+     defendant for the prosecutor's details; the clerk picks them
+     when approving the motions step.
+     ────────────────────────────────────────────────────────── */
 
-  contest: {
+  appearance: {
     pill: '1/3',
-    actor: 'plaintiff',
-    denyTitle: 'Step One Denied',
+    actor: 'filer',
+    denyTitle: 'Notice of Appearance Denied',
     reviewTitle: 'Step 1 - Waiting on clerk',
-    modalTitle: 'Criminal Contest 1/3',
+    modalTitle: 'Criminal Case 1/3',
   },
 
-  motion: {
+  motions: {
     pill: '2/3',
-    actor: 'plaintiff',
-    denyTitle: 'Step Two Denied',
-    reviewTitle: 'Step 2 - Waiting on clerk',
-    modalTitle: 'Criminal Contest 2/3',
-  },
-
-  notify: {
-    pill: '2/3',
-    actor: 'plaintiff',
+    actor: 'filer',
     picksCounterparty: true,
-    denyTitle: 'Notice to the State Denied',
-    reviewTitle: 'Notice to the State - Waiting on clerk',
-    modalTitle: 'Criminal Contest 2/3',
+    denyTitle: 'Motion Denied',
+    reviewTitle: 'Step 2 - Waiting on clerk',
+    modalTitle: 'Criminal Case 2/3',
   },
 
-  response: {
+  prosecution: {
     pill: '3/3',
-    actor: 'defendant',
-    denyTitle: 'State Response Denied',
+    actor: 'counterparty',
+    denyTitle: 'State Filing Denied',
     reviewTitle: 'Step 3 - Waiting on clerk',
-    modalTitle: 'Criminal Contest 3/3',
+    modalTitle: 'Criminal Case 3/3',
   },
 
   /* ── department ────────────────────────────────────────── */
 
   notice: {
-    actor: 'plaintiff',
+    actor: 'filer',
     noSubmission: true,
     denyTitle: 'Notice of Claim Denied',
     reviewTitle: 'Notice of Claim - Waiting on clerk',
@@ -107,17 +114,25 @@ const STAGES = {
 const PIPELINES = {
   person: ['intake', 'complaint', 'summons', 'service', 'answer', 'filed'],
   department: ['intake', 'notice', 'filed'],
-  criminal: ['intake', 'contest', 'motion', 'notify', 'response', 'filed'],
+  criminal: ['intake', 'appearance', 'motions', 'prosecution', 'filed'],
 };
 
-/** Human label for the two sides, which differ by kind of case. */
+/**
+ * What each side is CALLED, per kind of case. `filer` opened the case;
+ * `counterparty` is the other side. In a criminal matter the filer is the
+ * defendant and the counterparty is the prosecution — the exact opposite of
+ * a civil suit, which is why every label goes through here.
+ */
 const PARTY_LABELS = {
-  person: { plaintiff: 'Plaintiff', defendant: 'Defendant' },
-  department: { plaintiff: 'Claimant', defendant: 'Agency' },
-  criminal: { plaintiff: 'Accused', defendant: 'State' },
+  person: { filer: 'Plaintiff', counterparty: 'Defendant' },
+  department: { filer: 'Claimant', counterparty: 'Agency' },
+  criminal: { filer: 'Defendant', counterparty: 'Prosecution' },
 };
 
-const partyLabel = (kind, side) => (PARTY_LABELS[kind] ?? PARTY_LABELS.person)[side];
+const partyLabel = (kind, side) => (PARTY_LABELS[kind] ?? PARTY_LABELS.person)[side] ?? side;
+
+/** The user id of whichever side an actor refers to, for this case. */
+const actorId = (c, actor) => (actor === 'counterparty' ? c.defendant_id : c.plaintiff_id);
 
 const pipelineFor = (kind) => PIPELINES[kind] ?? PIPELINES.person;
 
@@ -132,4 +147,13 @@ function nextStage(kind, stage) {
 /** The first stage after intake — where a case lands when a clerk opens it. */
 const openingStage = (kind) => pipelineFor(kind)[1];
 
-module.exports = { STAGES, PIPELINES, PARTY_LABELS, partyLabel, pipelineFor, nextStage, openingStage };
+module.exports = {
+  STAGES,
+  PIPELINES,
+  PARTY_LABELS,
+  partyLabel,
+  actorId,
+  pipelineFor,
+  nextStage,
+  openingStage,
+};

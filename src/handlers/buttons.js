@@ -5,7 +5,7 @@ const { MessageFlags } = require('discord.js');
 const store = require('../db');
 const perms = require('../lib/perms');
 const { IDS, parse } = require('../lib/ids');
-const { STAGES } = require('../stages');
+const { STAGES, partyLabel, actorId } = require('../stages');
 const M = require('../ui/messages');
 const modals = require('../ui/modals');
 const W = require('../ui/govWizard');
@@ -233,14 +233,14 @@ async function handleButton(interaction) {
         );
       }
 
-      const expectedActor = STAGES[stage].actor === 'defendant' ? c.defendant_id : c.plaintiff_id;
       // No admin bypass: only the actual party may file on their own case.
+      // The wording comes from the case kind — a criminal filer is the
+      // defendant, so "only the plaintiff" would be flatly wrong there.
+      const expectedActor = actorId(c, STAGES[stage].actor);
       if (interaction.user.id !== expectedActor) {
         return nope(
           interaction,
-          STAGES[stage].actor === 'defendant'
-            ? 'Only the defendant can complete this step.'
-            : 'Only the plaintiff can complete this step.',
+          `Only the ${partyLabel(c.kind, STAGES[stage].actor).toLowerCase()} can complete this step.`,
         );
       }
 
@@ -293,7 +293,7 @@ async function handleButton(interaction) {
       // first — civil service picks the defendant, criminal notify the State.
       if (STAGES[sub.stage]?.picksCounterparty) {
         return interaction.showModal(
-          modals.serviceApproveModal(sub.id, sub.payload?.defendantId, sub.stage),
+          modals.serviceApproveModal(sub.id, sub.payload?.defendantId, c.kind),
         );
       }
 

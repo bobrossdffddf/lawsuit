@@ -28,6 +28,8 @@ config.dbPath = tmpDb;
 
 const store = require('../src/db');
 const cases = require('../src/services/caseService');
+const M = require('../src/ui/messages');
+const fmtLib = require('../src/lib/format');
 const { startCountdown, cancelCountdown } = require('../src/lib/countdown');
 const formsLib = require('../src/lib/forms');
 
@@ -55,7 +57,10 @@ function makeThread(name) {
   return {
     id: `thread-${++messageSeq}`,
     name,
-    members: { add: async (id) => added.add(id) },
+    members: {
+      add: async (id) => added.add(id),
+      remove: async (id) => added.delete(id),
+    },
     added,
     locked: false,
     archived: false,
@@ -81,6 +86,9 @@ function makeChannel(name) {
     permissionOverwrites: {
       edit: async (id, perms) => {
         overwrites.set(id, { ...(overwrites.get(id) ?? {}), ...perms });
+      },
+      delete: async (id) => {
+        overwrites.delete(id);
       },
     },
     overwrites,
@@ -200,6 +208,22 @@ function startFileHost() {
   assert(created.status === 'intake' && created.stage === 'intake', 'starts at intake');
   assert(sentMessages.length === 1, 'intake card posted');
 
+  console.log('\nDocket numbering survives a counter change');
+  // Exactly what broke in production: cases exist, but only under the OLD
+  // `case:<year>` counter key, so a fresh `case:CC:<year>` counter would
+  // start at zero and re-issue a number that is already taken.
+  store.db.prepare('DELETE FROM counters').run();
+  store.db.prepare('INSERT INTO counters (key, value) VALUES (?, ?)').run('26', 99);
+  const recovered = fmtLib.allocateCaseNumber('person');
+  assert(
+    recovered.seq === created.seq + 1,
+    `allocator recovered from the cases table (${recovered.caseNumber})`,
+  );
+  assert(
+    !store.db.prepare('SELECT 1 FROM cases WHERE case_number = ?').get(recovered.caseNumber),
+    'the recovered number is genuinely unused',
+  );
+
   console.log('\nSecond filing increments the docket');
   const second = await cases.createCase(makeInteraction(PLAINTIFF, null), {
     kind: 'department',
@@ -209,7 +233,7 @@ function startFileHost() {
     links: '',
     files: [],
   });
-  assert(second.c.seq === created.seq + 1, `${created.case_number} → ${second.c.case_number}`);
+  assert(second.c.seq > created.seq, `docket advances: ${created.case_number} → ${second.c.case_number}`);
 
   console.log('\nClerk opens the case');
   const clerk = makeInteraction(CLERK, channel);
@@ -406,29 +430,71 @@ function startFileHost() {
 
   const crimClerk = makeInteraction(CLERK, crimChannel);
   let cc = await cases.openCase(crimClerk, crim);
-  assert(cc.stage === 'contest', 'criminal opens at the contest stage');
+  assert(cc.stage === 'appearance', 'criminal opens at the appearance stage');
 
-  let cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'contest',
+  let cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'appearance',
     upload('/complaint.pdf', 'CR-08_Notice_of_Appearance_of_Counsel.pdf'));
   cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
-  assert(cc.stage === 'motion', 'contest -> motion');
+  assert(cc.stage === 'motions', 'appearance -> motions');
 
-  cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'motion',
+  cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'motions',
     upload('/summons.pdf', 'CR-12_Motion_to_Suppress_Evidence.pdf'));
-  cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
-  assert(cc.stage === 'notify', 'motion -> notify');
-
-  cid = await cases.submitStage(makeInteraction('555555555555555555', crimChannel), cc, 'notify',
-    upload('/answer.pdf', 'GN-05_Certificate_of_Service.pdf'),
-    { defendantUser: 'asa_ortiz', defendantId: '666666666666666666' });
   store.resolveSubmission(cid, 'approved', null, CLERK);
-  cc = await cases.attachDefendant(crimClerk, store.getCaseById(cc.id), '666666666666666666');
-  assert(cc.stage === 'response', 'notify -> response (the State is added)');
 
-  cid = await cases.submitStage(makeInteraction('666666666666666666', crimChannel), cc, 'response',
+  // The clerk assigns the prosecutor when approving motions — the defendant is
+  // never asked who is prosecuting them.
+  const motionSub = store.getSubmission(cid);
+  assert(
+    !('defendantUser' in (motionSub.payload ?? {})),
+    'the criminal filer is never asked for the prosecutor',
+  );
+
+  cc = await cases.attachDefendant(crimClerk, store.getCaseById(cc.id), '666666666666666666');
+  assert(cc.stage === 'prosecution', 'clerk assigning the State moves it to prosecution');
+
+  cid = await cases.submitStage(makeInteraction('666666666666666666', crimChannel), cc, 'prosecution',
     upload('/complaint.pdf', 'CR-03_Information.pdf'));
   cc = await cases.approveSubmission(crimClerk, cc, store.getSubmission(cid));
   assert(cc.status === 'filed' && Boolean(cc.discovery_thread_id), 'criminal case is filed with discovery');
+
+  console.log('\nTerminology');
+  const { partyLabel } = require('../src/stages');
+  assert(partyLabel('criminal', 'filer') === 'Defendant', 'a criminal filer is the Defendant');
+  assert(partyLabel('criminal', 'counterparty') === 'Prosecution', 'the other side is the Prosecution');
+  assert(partyLabel('person', 'filer') === 'Plaintiff', 'a civil filer is still the Plaintiff');
+  const crimPrompt = JSON.stringify(M.stagePrompt('prosecution', store.getCaseById(cc.id)));
+  assert(
+    crimPrompt.includes('Only the Prosecution is able to do this part'),
+    'criminal footnote names the prosecution, not "the defendant"',
+  );
+
+  console.log('\nSkip and remove');
+  // A fresh case to skip through, so the assertions are real.
+  const { c: skipCase, channel: skipChannel } = await cases.createCase(
+    makeInteraction(PLAINTIFF, null),
+    { kind: 'person', defendantRaw: 'someone', department: null, reason: 'Testing skip.', links: '', files: [] },
+  );
+  const skipClerk = makeInteraction(CLERK, skipChannel);
+  let sk = await cases.openCase(skipClerk, skipCase);
+  assert(sk.stage === 'complaint', 'fresh case opens at complaint');
+
+  const jumped = await cases.skipStage(skipClerk, sk);
+  assert(jumped?.to === 'summons', `skip moved complaint -> ${jumped?.to}`);
+  assert(store.getCaseById(sk.id).stage === 'summons', 'stage really advanced');
+
+  // A pending filing on a skipped stage must not stay actionable.
+  sk = store.getCaseById(sk.id);
+  const orphan = await cases.submitStage(makeInteraction(PLAINTIFF, skipChannel), sk, 'summons', []);
+  await cases.skipStage(skipClerk, store.getCaseById(sk.id));
+  assert(
+    store.getSubmission(orphan).status !== 'pending',
+    'a pending submission on a skipped step is closed out',
+  );
+
+  const { cleared } = await cases.removeParty(crimClerk, store.getCaseById(cc.id), '666666666666666666');
+  assert(cleared.includes('prosecution'), `removing the State clears them (${cleared.join(', ')})`);
+  assert(store.getCaseById(cc.id).defendant_id === null, 'case row no longer points at them');
+  assert(store.getMemberRoles(cc.id, '666666666666666666').length === 0, 'membership row dropped');
 
   console.log('\nForm carry-over');
   const profile = store.getFields(cc.id);
@@ -506,13 +572,14 @@ function startFileHost() {
 
   console.log('\nActive docket');
   const active = store.getActiveCases();
-  assert(active.length === 2, `${active.length} active cases (denied, unopened and closed excluded)`);
+  assert(active.length === 3, `${active.length} active cases (denied, unopened and closed excluded)`);
 
   server.close();
   fs.rmSync(path.join(config.caseFilesDir, created.case_number), { recursive: true, force: true });
   fs.rmSync(path.join(config.caseFilesDir, second.c.case_number), { recursive: true, force: true });
   fs.rmSync(path.join(config.caseFilesDir, govCase.case_number), { recursive: true, force: true });
   fs.rmSync(path.join(config.caseFilesDir, crim.case_number), { recursive: true, force: true });
+  fs.rmSync(path.join(config.caseFilesDir, skipCase.case_number), { recursive: true, force: true });
   fs.rmSync(tmpDb, { force: true });
   fs.rmSync(`${tmpDb}-wal`, { force: true });
   fs.rmSync(`${tmpDb}-shm`, { force: true });

@@ -1,7 +1,7 @@
 'use strict';
 
 const { IDS, FIELDS, withArg } = require('../lib/ids');
-const { STAGES } = require('../stages');
+const { STAGES, partyLabel } = require('../stages');
 const { T } = require('./common');
 
 /** Label (type 18) wrapping a single input. */
@@ -141,25 +141,24 @@ const caseDenyModal = () => ({
 function stepModal(stage) {
   const meta = STAGES[stage];
 
-  // Stages that identify the other side collect their handle and id here, so a
-  // clerk has something to confirm against when they pick the user.
-  if (meta.picksCounterparty) {
+  // Only where the FILER genuinely serves the other side do we ask them who it
+  // is. A criminal defendant never serves or names the prosecution — the court
+  // assigns it — so their steps are a plain upload.
+  if (meta.collectsCounterparty) {
     return {
       custom_id: withArg(IDS.MODAL_STEP, stage),
       title: meta.modalTitle,
       components: [
         label(
-          stage === 'notify'
-            ? 'Proof you served the State.'
-            : 'Video and/or photo of defendant being served.',
+          'Video and/or photo of defendant being served.',
           fileUpload(FIELDS.UPLOAD, { max_values: 10 }),
         ),
         label(
-          stage === 'notify' ? 'Discord user of the prosecutor' : 'Discord user of the defendant',
+          'Discord user of the defendant',
           textInput(FIELDS.DEFENDANT_USER, { placeholder: 'Justauser_', max_length: 100 }),
         ),
         label(
-          stage === 'notify' ? 'Prosecutor Discord ID' : 'Defendant Discord ID',
+          'Defendant Discord ID',
           textInput(FIELDS.DEFENDANT_ID, { placeholder: '467238643627', max_length: 25 }),
         ),
       ],
@@ -195,29 +194,39 @@ const reviewDenyModal = (submissionId) => ({
 
 /* ── 6. Clerk approves service and identifies the defendant ──── */
 
-const serviceApproveModal = (submissionId, suggestedDefendantId, stage = 'service') => ({
-  custom_id: withArg(IDS.MODAL_SERVICE_OK, submissionId),
-  title: stage === 'notify' ? 'Criminal Contest 2/3' : 'Civil Lawsuit 2/3',
-  components: [
-    label(
-      stage === 'notify'
-        ? "Please select the prosecutor's user."
-        : "Please select the defendant's user.",
-      userSelect(FIELDS.DEFENDANT_SELECT, {
-        placeholder: stage === 'notify' ? 'Select the prosecutor' : 'Select the defendant',
-        defaultUserId: suggestedDefendantId,
-      }),
-    ),
-    {
-      type: T.TEXT,
-      content:
-        '### If the defendant has not joined the server after 3 business days of being served a ' +
-        'default judgment may be entered against them for the full amount demanded. As the clerk ' +
-        'you must notify them 3 times on 3 separate days. If they do not join the government server ' +
-        "within 5 days please contact a moderator because the defendant is FRP'ing.",
-    },
-  ],
-});
+/**
+ * The clerk names the other side. What that side is called depends on the kind
+ * of case — a criminal clerk is picking the prosecutor, not "the defendant".
+ */
+const serviceApproveModal = (submissionId, suggestedDefendantId, kind = 'person') => {
+  const side = partyLabel(kind, 'counterparty');
+  const criminal = kind === 'criminal';
+
+  return {
+    custom_id: withArg(IDS.MODAL_SERVICE_OK, submissionId),
+    title: criminal ? 'Criminal Case 2/3' : 'Civil Lawsuit 2/3',
+    components: [
+      label(
+        `Please select the ${side.toLowerCase()}.`,
+        userSelect(FIELDS.DEFENDANT_SELECT, {
+          placeholder: `Select the ${side.toLowerCase()}`,
+          defaultUserId: suggestedDefendantId,
+        }),
+      ),
+      {
+        type: T.TEXT,
+        content: criminal
+          ? '### Assign the prosecutor who will represent the State. They will be added to the ' +
+            'case and asked to file the Information (CR-03). The defendant is not asked to ' +
+            'identify them — that is the court\'s job.'
+          : '### If the defendant has not joined the server after 3 business days of being served ' +
+            'a default judgment may be entered against them for the full amount demanded. As the ' +
+            'clerk you must notify them 3 times on 3 separate days. If they do not join the ' +
+            "government server within 5 days please contact a moderator because the defendant is FRP'ing.",
+      },
+    ],
+  };
+};
 
 /* ── 7. Government claim: the two wizard modals ──────────────── */
 
