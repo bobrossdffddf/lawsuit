@@ -548,6 +548,34 @@ for (const [stage, meta] of Object.entries(STAGES)) {
   checkModal(`serviceApproveModal:${stage}:criminal`, modals.serviceApproveModal(1, null, 'criminal'));
 }
 
+console.log('\nInteraction timing');
+// A file upload inside an interaction callback has to finish within three
+// seconds or Discord answers 10062 Unknown interaction. Anything that attaches
+// the court PDFs must therefore be sent with editReply(), after an ack — never
+// straight from reply() or update().
+{
+  const handlerSrc = ['src/handlers/buttons.js', 'src/handlers/modals.js']
+    .map((f) => fs.readFileSync(`${__dirname}/../${f}`, 'utf8'))
+    .join('\n');
+
+  // `govPanel(step, id, seconds, true)` is the with-files render.
+  const withFiles = /interaction\.(reply|update)\([^)]*govPanel\([^)]*,\s*true\s*\)/g;
+  const offenders = handlerSrc.match(withFiles) ?? [];
+
+  if (offenders.length) {
+    fail('timing', `${offenders.length} call(s) upload forms inside the ack window: ${offenders[0]}`);
+  } else {
+    ok('court PDFs are only attached after the interaction is acknowledged');
+  }
+
+  // And the panels that actually carry files are the ones we think they are.
+  const carrying = [];
+  for (let step = 1; step <= W.PANEL_COUNT; step += 1) {
+    if ((W.govPanel(step, 1, 5, true).files ?? []).length) carrying.push(step);
+  }
+  ok(`wizard panels carrying uploads: ${carrying.join(', ') || 'none'}`);
+}
+
 console.log('\nWelcome message');
 checkMessage('welcomeMessage', M.welcomeMessage({ id: '111111111111111111', guild: { memberCount: 45 } }));
 

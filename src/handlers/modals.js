@@ -115,8 +115,10 @@ async function handleModal(interaction) {
 
       store.saveDraft(draftId, files, draft.payload);
 
+      await interaction.deferUpdate();
+
       const render = (n) => W.govPanel(4, draftId, n);
-      await interaction.update(W.govPanel(4, draftId, W.READ_SECONDS, true));
+      await interaction.editReply(W.govPanel(4, draftId, W.READ_SECONDS, true));
       startCountdown(draftId, interaction, render, W.READ_SECONDS);
       return undefined;
     }

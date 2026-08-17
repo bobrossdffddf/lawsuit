@@ -94,6 +94,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isStringSelectMenu()) return await handleSelect(interaction);
     if (interaction.isModalSubmit()) return await handleModal(interaction);
   } catch (err) {
+    // 10062 means the three-second acknowledgement window closed before the
+    // bot answered. There is no interaction left to apologise to, so log one
+    // useful line instead of a stack trace nobody can act on.
+    if (err?.code === 10062) {
+      console.error(
+        `[interaction] too slow to acknowledge (${interaction.customId ?? interaction.commandName})` +
+          ' — defer first if this repeats',
+      );
+      return undefined;
+    }
     console.error('[interaction] unhandled error:', err);
     const body = {
       content: 'Something went wrong handling that. A log entry was written — tell an admin.',

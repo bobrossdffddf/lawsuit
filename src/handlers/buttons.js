@@ -50,8 +50,14 @@ async function handleButton(interaction) {
 
     case IDS.PANEL_DEPT: {
       const draftId = store.createDraft(interaction.user.id, interaction.guildId, 'department');
+
+      // Acknowledge before rendering. Panel 1 carries no attachments today,
+      // but every other panel does, and an unacknowledged upload is a 10062.
+      // Deferring here means adding a form to panel 1 can never break it.
+      await interaction.deferReply({ flags: EPHEMERAL });
+
       const render = (n) => W.govPanel(1, draftId, n);
-      await interaction.reply(W.ephemeral(W.govPanel(1, draftId, W.READ_SECONDS, true)));
+      await interaction.editReply(W.govPanel(1, draftId, W.READ_SECONDS, true));
       startCountdown(draftId, interaction, render, W.READ_SECONDS);
       return undefined;
     }
@@ -76,8 +82,16 @@ async function handleButton(interaction) {
       if (step === 3) return interaction.showModal(modals.govFilesModal(draftId));
       if (step === 4) return interaction.showModal(modals.govDetailsModal(draftId));
 
+      // Acknowledge FIRST. Panels 2 and 3 attach court PDFs, and pushing a
+      // multipart upload through the interaction callback blows the
+      // three-second window — that is a 10062 Unknown interaction, and the
+      // filer sees "This interaction failed" with the wizard stuck.
+      // deferUpdate() is an empty ack, so the upload happens afterwards with
+      // a fifteen-minute budget instead of three seconds.
+      await interaction.deferUpdate();
+
       const render = (n) => W.govPanel(step + 1, draftId, n);
-      await interaction.update(W.govPanel(step + 1, draftId, W.READ_SECONDS, true));
+      await interaction.editReply(W.govPanel(step + 1, draftId, W.READ_SECONDS, true));
       startCountdown(draftId, interaction, render, W.READ_SECONDS);
       return undefined;
     }

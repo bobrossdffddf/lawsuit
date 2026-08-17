@@ -62,6 +62,12 @@ filed    discovery thread opens
 
 Cancel at any point discards everything; nothing is filed.
 
+Every wizard transition acknowledges the interaction **before** rendering the
+panel. Panels 2 and 3 attach court PDFs, and a multipart upload pushed through
+an interaction callback misses Discord's three-second window — `10062 Unknown
+interaction`, and the filer sees "This interaction failed". `npm run check`
+fails if any `reply()` or `update()` is given a payload carrying forms.
+
 ### Contesting a criminal charge
 
 Filing creates `26-CR-000001` on its own docket, in `CRIMINAL_CASE_CATEGORY_ID`.

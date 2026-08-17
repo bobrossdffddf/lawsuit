@@ -103,9 +103,23 @@ const title = (line) => `# ${config.brand.seal} ${line}`;
 /** `#1234567890` -> a clickable channel mention, or empty string if unset. */
 const channelRef = (id) => (id ? `<#${id}>` : 'the support channel');
 
-/** Loads a court form off disk as an attachment named exactly for `attachment://`. */
-const formAttachment = (key) =>
-  new AttachmentBuilder(config.forms[key].file, { name: config.forms[key].name });
+// The 45 forms are static and small; reading them once keeps every send off
+// the disk, which matters most inside an interaction's response window.
+const formCache = new Map();
+
+/** Loads a court form as an attachment named exactly for `attachment://`. */
+function formAttachment(key) {
+  const spec = config.forms[key];
+  if (!formCache.has(key)) {
+    try {
+      formCache.set(key, fs.readFileSync(spec.file));
+    } catch {
+      formCache.set(key, null);
+    }
+  }
+  const cached = formCache.get(key);
+  return new AttachmentBuilder(cached ?? spec.file, { name: spec.name });
+}
 
 const formName = (key) => config.forms[key].name;
 
