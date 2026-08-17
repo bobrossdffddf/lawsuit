@@ -229,34 +229,94 @@ for (const [key, form] of Object.entries(config.forms)) {
 // field renders comically large. Catch that here rather than in Discord.
 async function auditForms() {
   const { PDFDocument, PDFName } = require('pdf-lib');
+  const forms = require('../src/lib/forms');
   const MAX_POINT_SIZE = 12;
+
+  const daOf = (field, widget) => {
+    const d = widget.dict.get(PDFName.of('DA')) ?? field.acroField.dict.get(PDFName.of('DA'));
+    return d ? String(d.decodeText ? d.decodeText() : d) : null;
+  };
+  const sizeOf = (da) => {
+    const m = da ? da.match(/([\d.]+)\s+Tf/) : null;
+    return m ? Number(m[1]) : null;
+  };
+  const daMap = async (buffer) => {
+    const doc = await PDFDocument.load(buffer);
+    const map = new Map();
+    for (const field of doc.getForm().getFields()) {
+      if (typeof field.getText !== 'function') continue;
+      for (const [i, widget] of field.acroField.getWidgets().entries()) {
+        map.set(`${field.getName()}#${i}`, daOf(field, widget));
+      }
+    }
+    return map;
+  };
+
   let big = 0;
+  let auto = 0;
   let filled = 0;
   let capped = 0;
   let baked = 0;
+  let drifted = 0;
+  let textWidgets = 0;
+
+  // Sample answers, so the pre-fill path is exercised on every form.
+  const PROFILE = {
+    case_number: '26-CC-000042',
+    division: 'Civil',
+    judge: 'Hon. Max Goodman',
+    plaintiff: 'justawacko',
+    defendant: 'criminal3',
+    username: 'justawacko',
+  };
 
   for (const [key, form] of Object.entries(config.forms)) {
     if (!fs.existsSync(form.file)) continue;
-    const doc = await PDFDocument.load(fs.readFileSync(form.file));
+    const blank = fs.readFileSync(form.file);
+    const doc = await PDFDocument.load(blank);
+
     for (const field of doc.getForm().getFields()) {
-      if (typeof field.getText === 'function' && (field.getText() ?? '').trim()) filled += 1;
+      const isText = typeof field.getText === 'function';
+      if (isText && (field.getText() ?? '').trim()) filled += 1;
+
       for (const widget of field.acroField.getWidgets()) {
         if (widget.dict.has(PDFName.of('MaxLen'))) capped += 1;
         if (widget.dict.has(PDFName.of('AP'))) baked += 1;
-        const da = widget.dict.get(PDFName.of('DA'));
-        if (!da) continue;
-        const text = String(da.decodeText ? da.decodeText() : da);
-        const match = text.match(/([\d.]+)\s+Tf/);
-        if (match && Number(match[1]) > MAX_POINT_SIZE) {
+        if (!isText) continue; // checkboxes do not draw text
+
+        textWidgets += 1;
+        const size = sizeOf(daOf(field, widget));
+        // 0 Tf means "auto-size": the viewer picks a size to fill the box,
+        // which is how a 150pt-tall description box rendered at 132pt.
+        if (size === null || size === 0) {
+          auto += 1;
+          if (auto <= 3) console.error(`  ! ${key} "${field.getName()}" is auto-size`);
+        } else if (size > MAX_POINT_SIZE) {
           big += 1;
-          if (big <= 3) console.error(`  ! ${key} field "${field.getName()}" is ${match[1]}pt`);
+          if (big <= 3) console.error(`  ! ${key} "${field.getName()}" is ${size}pt`);
         }
+      }
+    }
+
+    // Pre-filling must not rewrite a single font size.
+    const before = await daMap(blank);
+    const after = await daMap(await forms.fillForm(key, PROFILE));
+    for (const [k, v] of before) {
+      if (after.get(k) !== v) {
+        drifted += 1;
+        if (drifted <= 3) console.error(`  ! ${key} "${k}" changed on pre-fill: ${v} -> ${after.get(k)}`);
       }
     }
   }
 
   if (big) fail('forms', `${big} field(s) render above ${MAX_POINT_SIZE}pt`);
-  else ok(`no field renders above ${MAX_POINT_SIZE}pt`);
+  else ok(`no text field renders above ${MAX_POINT_SIZE}pt (${textWidgets} checked)`);
+
+  if (auto) fail('forms', `${auto} text field(s) are auto-size and will render huge`);
+  else ok('no text field is auto-size');
+
+  if (drifted) fail('forms', `${drifted} field(s) had their font size rewritten by pre-filling`);
+  else ok('pre-filling never rewrites a font size');
 
   if (capped) fail('forms', `${capped} field(s) still have a MaxLen cap`);
   else ok('no field has a character cap');
