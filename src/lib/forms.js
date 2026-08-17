@@ -112,11 +112,14 @@ async function fillForm(key, values) {
     }
     if (!filled) return raw;
 
-    // Ask viewers to regenerate appearances; some readers otherwise show the
-    // boxes as empty until they are clicked.
+    // Viewers draw the text themselves, using each widget's own /DA.
     form.acroForm.dict.set(PDFName.of('NeedAppearances'), PDFBool.True);
 
-    return Buffer.from(await doc.save({ updateFieldAppearances: true }));
+    // updateFieldAppearances MUST stay false. The forms' AcroForm default is
+    // `/Helv 0 Tf` — 0 means auto-size — so letting pdf-lib bake appearance
+    // streams makes it recompute a size per box to fill the height. That is
+    // what turned 8pt fields into 10pt, 15pt and one at 51pt.
+    return Buffer.from(await doc.save({ updateFieldAppearances: false }));
   } catch (err) {
     console.error(`[forms] could not pre-fill ${spec.name}:`, err.message);
     return raw;

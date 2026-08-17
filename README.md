@@ -101,6 +101,13 @@ was stripped from all 2,183 capped fields, and the sample data every form
 shipped with ("Marcus D. Reeves", case `26-CC-000915`) was cleared, so litigants
 get a genuine blank.
 
+**Appearance streams are deliberately left to the viewer.** These forms set
+`NeedAppearances` and use `/Helv 0 Tf` (auto-size) as the AcroForm default,
+so anything that bakes appearance streams recomputes a font size per box to
+fill its height — which turns an 8pt field into 51pt. `fillForm()` therefore
+saves with `updateFieldAppearances: false`, and `npm run check` fails if any
+field's `/DA` exceeds 12pt.
+
 ### Lawyers
 
 `/review` opens a private panel listing everyone with `LAWYER_ROLE_ID`, split

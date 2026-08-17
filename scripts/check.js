@@ -224,6 +224,50 @@ for (const [key, form] of Object.entries(config.forms)) {
   }
 }
 
+// The forms are designed at 8-10pt. If anything ever rewrites a widget's /DA
+// with a bigger size — which is what pdf-lib's appearance baking did — the
+// field renders comically large. Catch that here rather than in Discord.
+async function auditForms() {
+  const { PDFDocument, PDFName } = require('pdf-lib');
+  const MAX_POINT_SIZE = 12;
+  let big = 0;
+  let filled = 0;
+  let capped = 0;
+  let baked = 0;
+
+  for (const [key, form] of Object.entries(config.forms)) {
+    if (!fs.existsSync(form.file)) continue;
+    const doc = await PDFDocument.load(fs.readFileSync(form.file));
+    for (const field of doc.getForm().getFields()) {
+      if (typeof field.getText === 'function' && (field.getText() ?? '').trim()) filled += 1;
+      for (const widget of field.acroField.getWidgets()) {
+        if (widget.dict.has(PDFName.of('MaxLen'))) capped += 1;
+        if (widget.dict.has(PDFName.of('AP'))) baked += 1;
+        const da = widget.dict.get(PDFName.of('DA'));
+        if (!da) continue;
+        const text = String(da.decodeText ? da.decodeText() : da);
+        const match = text.match(/([\d.]+)\s+Tf/);
+        if (match && Number(match[1]) > MAX_POINT_SIZE) {
+          big += 1;
+          if (big <= 3) console.error(`  ! ${key} field "${field.getName()}" is ${match[1]}pt`);
+        }
+      }
+    }
+  }
+
+  if (big) fail('forms', `${big} field(s) render above ${MAX_POINT_SIZE}pt`);
+  else ok(`no field renders above ${MAX_POINT_SIZE}pt`);
+
+  if (capped) fail('forms', `${capped} field(s) still have a MaxLen cap`);
+  else ok('no field has a character cap');
+
+  if (filled) fail('forms', `${filled} field(s) still carry sample data`);
+  else ok('every form is a true blank');
+
+  if (baked) fail('forms', `${baked} widget(s) have a baked appearance stream`);
+  else ok('appearances are left to the viewer (NeedAppearances)');
+}
+
 console.log('\nMessages');
 checkMessage('lawsuitPanel', M.lawsuitPanel());
 checkMessage('intakeMessage', M.intakeMessage(fakeCase, fakeMedia));
@@ -484,16 +528,21 @@ else fail('hyperlink', linked);
 if (fmt.hyperlink('') === '*None provided*') ok('hyperlink:empty');
 else fail('hyperlink:empty', 'should render a placeholder');
 
-if (missingForms.length) {
-  console.warn(
-    `\nACTION REQUIRED: drop these into assets/forms/ before using the flows that need them:\n` +
-      missingForms.map((f) => `  - ${f}`).join('\n'),
-  );
-}
+(async () => {
+  console.log('\nForm rendering');
+  await auditForms();
 
-console.log(
-  failures === 0
-    ? `\nall ${checks} checks passed\n`
-    : `\n${failures} problem(s) found\n`,
-);
-process.exit(failures === 0 ? 0 : 1);
+  if (missingForms.length) {
+    console.warn(
+      `\nACTION REQUIRED: drop these into assets/forms/ before using the flows that need them:\n` +
+        missingForms.map((f) => `  - ${f}`).join('\n'),
+    );
+  }
+
+  console.log(
+    failures === 0
+      ? `\nall ${checks} checks passed\n`
+      : `\n${failures} problem(s) found\n`,
+  );
+  process.exit(failures === 0 ? 0 : 1);
+})();
